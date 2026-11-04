@@ -346,20 +346,20 @@ function renderSummary() {
       <div class="name"><i></i>${esc(g.name)}</div>
       <div class="num">${pct}%<small>${done}/${list.length}</small></div>
       <div class="bar"><span style="width:${pct}%"></span></div>
-      <div class="late">${late ? `기한 지남 ${late}건` : ""}</div></button>`;
+      <div class="late" title="${late ? `기한 지남 ${late}건` : ""}">${late ? `지남 ${late}` : ""}</div></button>`;
   }).join("");
   const vacDays = new Set();
   S.vacs.forEach((v) => { if (S.dept === "all" || v.dept === S.dept) vacDays.add(v.name); });
   html += `<div class="stat vac-stat"><div class="name">🌴 이번 달 휴가</div><div class="num">${vacDays.size}<small>명</small></div>
-    <div class="late muted">${S.vacs.filter((v) => v.start <= TODAY && TODAY <= (v.end || v.start)).length ? `오늘 휴가 ${S.vacs.filter((v) => v.start <= TODAY && TODAY <= (v.end || v.start)).length}명` : ""}</div></div>`;
+    <div class="late muted">${S.vacs.filter((v) => v.start <= TODAY && TODAY <= (v.end || v.start)).length ? `오늘 ${S.vacs.filter((v) => v.start <= TODAY && TODAY <= (v.end || v.start)).length}명` : ""}</div></div>`;
   if (userName()) {
     const mine = S.personal.filter(isMine);
     const md2 = mine.filter((p) => p.done).length;
     const pct = mine.length ? Math.round((md2 / mine.length) * 100) : 0;
-    html += `<button class="stat me-stat" data-add-personal="" style="--c:var(--me)"><div class="name">👤 내 일정 (${esc(userName())})</div>
+    html += `<button class="stat me-stat" data-add-personal="" style="--c:var(--me)" title="눌러서 개인 일정 추가"><div class="name">👤 내 일정</div>
       <div class="num">${mine.length ? pct + "%" : "–"}<small>${md2}/${mine.length}</small></div>
       <div class="bar"><span style="width:${pct}%"></span></div>
-      <div class="late muted">${mine.filter((p) => p.private).length ? `🔒 비공개 ${mine.filter((p) => p.private).length}건 포함` : "눌러서 개인 일정 추가"}</div></button>`;
+      <div class="late muted">${mine.filter((p) => p.private).length ? `🔒${mine.filter((p) => p.private).length}` : ""}</div></button>`;
   }
   $("#summary").innerHTML = html;
 }
