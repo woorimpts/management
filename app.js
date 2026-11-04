@@ -188,7 +188,8 @@ async function processItems(month) {
   if (S.month !== month) return;
   S.tasks = list.filter((x) => x.kind === "task").sort(taskOrder);
   S.vacs = list.filter((x) => x.kind === "vacation").sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.name || "").localeCompare(b.name || ""));
-  S.notes = list.filter((x) => x.kind === "note").sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0));
+  // 직접 등록한 공지가 위, 엑셀 공지는 엑셀 순서대로
+  S.notes = list.filter((x) => x.kind === "note").sort((a, b) => (a.src === "excel") - (b.src === "excel") || (a.ord ?? 0) - (b.ord ?? 0) || (a.start || "").localeCompare(b.start || ""));
   S.personal = list.filter((x) => x.kind === "personal").sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.title || "").localeCompare(b.title || ""));
 }
 function taskOrder(a, b) {
@@ -515,7 +516,9 @@ function renderExtra() {
   if (S.view === "calendar" && undated.length)
     html += `<section class="group"><h3>날짜 미정 · 상시 업무<small>${undated.length}건</small></h3><div class="body">${undated.map(taskCard).join("")}</div></section>`;
   if (notes.length)
-    html += `<section class="group"><h3>공지</h3><ul class="notes">${notes.map((n) => `<li><b style="color:${color(n.dept)}">${esc(n.dept || "")}</b> ${esc(n.text)}</li>`).join("")}</ul></section>`;
+    html += `<section class="group"><h3>📢 공지<small>${notes.length}건</small></h3><ul class="notes">${notes.map((n) =>
+      `<li><span><b style="color:${color(n.dept)}">${esc(n.dept || "")}</b> ${esc(n.text)}${n.by ? ` <span class="by">${esc(n.by)}</span>` : ""}</span>
+        <button class="edit-btn" data-edit-note="${esc(n.id)}" title="수정/삭제" aria-label="수정">✎</button></li>`).join("")}</ul></section>`;
   if (S.view === "calendar" && S.loaded && !S.tasks.length && !S.vacs.length)
     html += `<section class="group"><div class="empty big">이 달에 등록된 업무가 없습니다.<br><b>📤 엑셀 업로드</b> 또는 <b>+ 업무 추가</b>로 시작하세요.</div></section>`;
   $("#extra").innerHTML = html;
@@ -640,6 +643,46 @@ function vacForm(vac, date) {
     });
   });
 }
+// ───────── 공지 ─────────
+// 게시 기간에 걸친 달마다 공지 칸에 표시. 엑셀 공지는 기간 없이 업로드한 달에만 표시
+function noteForm(note) {
+  if (!requireName()) return;
+  const n = note || { dept: store("myDept") || "", text: "", start: S.month + "-01", end: "" };
+  openModal(`<form class="form" id="noteForm">
+    <h2>${note ? "공지 수정" : "📢 공지 등록"}</h2>
+    <label>내용 *<textarea name="text" rows="3" required maxlength="500">${esc(n.text)}</textarea></label>
+    <label>부서<input name="dept" list="deptList" value="${esc(n.dept || "")}" maxlength="30" placeholder="비우면 전체 공지"></label>
+    <div class="row2">
+      <label>게시 시작일<input type="date" name="start" value="${esc(n.start || "")}"></label>
+      <label>게시 종료일 <small>(비우면 그 달만)</small><input type="date" name="end" value="${esc(n.end && n.end !== n.start ? n.end : "")}"></label>
+    </div>
+    ${deptDatalist()}
+    <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">저장</button></div>
+    ${note ? deleteRow("공지") : ""}
+  </form>`, (card) => {
+    const f = $("#noteForm", card);
+    f.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const x = Object.fromEntries(new FormData(f));
+      const text = x.text.trim();
+      if (!text) return;
+      if (x.start && x.end && x.end < x.start) { toast("종료일이 시작일보다 빠릅니다."); return; }
+      const start = isISO(x.start) ? x.start : "";
+      const data = { ...(note || {}), text, dept: x.dept.trim(), start, end: start ? x.end || start : "", src: note ? note.src || "manual" : "manual", by: note ? note.by || "" : userName() };
+      busy(f, true);
+      try {
+        await saveItem("note", data, note && note.id);
+        rememberDept(data.dept);
+        closeModal(); toast(note ? "공지를 수정했습니다." : "공지를 등록했습니다.");
+        if (!note && start && !start.startsWith(S.month)) setMonth(start.slice(0, 7));
+      } catch (e) { console.error(e); toast("저장하지 못했습니다."); busy(f, false); }
+    };
+    if (note) wireDelete(card, async () => {
+      try { await deleteItem(note.id); closeModal(); toast("공지를 삭제했습니다."); } catch (e) { console.error(e); toast("삭제하지 못했습니다."); }
+    });
+  });
+}
+
 // ───────── 개인 일정 ─────────
 function pwFields(exists) {
   return exists
@@ -887,6 +930,12 @@ function downloadMonth() {
       vs["!cols"] = [{ wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 24 }];
       XLSX.utils.book_append_sheet(wb, vs, "휴가");
     }
+    if (S.notes.length) {
+      const ns = XLSX.utils.aoa_to_sheet([["부서", "공지 내용", "게시 시작일", "게시 종료일", "등록자"],
+        ...S.notes.map((n) => [n.dept || "", n.text || "", n.start || "", n.end && n.end !== n.start ? n.end : "", n.by || (n.src === "excel" ? "엑셀" : "")])]);
+      ns["!cols"] = [{ wch: 12 }, { wch: 60 }, { wch: 12 }, { wch: 12 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb, ns, "공지");
+    }
     XLSX.writeFile(wb, `업무계획_${S.month}.xlsx`);
   }).catch(() => toast("엑셀 파일을 만들지 못했습니다. 인터넷 연결을 확인해 주세요."));
 }
@@ -937,7 +986,7 @@ async function showPreview(card, res, fileName) {
   try {
     for (const m of months) {
       const snap = await db.collection("items").where("months", "array-contains", m).get();
-      (await readDocs(snap.docs)).forEach((x) => { if ((x.kind === "task" && x.src === "excel") || x.kind === "note") existing.push(x); });
+      (await readDocs(snap.docs)).forEach((x) => { if ((x.kind === "task" || x.kind === "note") && x.src === "excel") existing.push(x); });
     }
     existing = [...new Map(existing.map((x) => [x.id, x])).values()];
   } catch (e) { console.error(e); }
@@ -1040,6 +1089,8 @@ function wireEvents() {
     if ((el = t.closest("[data-edit-vac]"))) { vacForm(S.vacs.find((x) => x.id === el.dataset.editVac)); return; }
     if ((el = t.closest("[data-add-task]"))) { taskForm(null, el.dataset.addTask || S.sel); return; }
     if ((el = t.closest("[data-add-vac]"))) { vacForm(null, el.dataset.addVac || S.sel); return; }
+    if ((el = t.closest("[data-edit-note]"))) { noteForm(S.notes.find((x) => x.id === el.dataset.editNote)); return; }
+    if (t.closest("[data-add-note]")) { noteForm(null); return; }
     if ((el = t.closest("[data-edit-personal]"))) { ev.preventDefault(); personalForm(S.personal.find((x) => x.id === el.dataset.editPersonal)); return; }
     if ((el = t.closest("[data-add-personal]"))) { personalForm(null, el.dataset.addPersonal || S.sel); return; }
     if (t.closest("#pLockBtn")) { unlockForm(); return; }
