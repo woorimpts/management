@@ -69,11 +69,19 @@ async function deriveKey(pw) {
   return crypto.subtle.deriveKey({ name: "PBKDF2", salt: b64d(L.salt), iterations: L.iter, hash: "SHA-256" },
     base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
-async function seal(obj) {
+async function seal(obj, key = KEY) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, KEY, TE.encode(JSON.stringify(obj)));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, TE.encode(JSON.stringify(obj)));
   return { iv: b64e(iv), ct: b64e(new Uint8Array(ct)) };
 }
+// 개인 비밀번호 키: 이름별로 고정된 salt(사이트 salt + 이름) → 같은 이름·비밀번호면 항상 같은 키
+async function personalKey(name, pw) {
+  const salt = new Uint8Array(await crypto.subtle.digest("SHA-256", TE.encode(window.LOCK.salt + "|personal|" + name)));
+  const base = await crypto.subtle.importKey("raw", TE.encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: window.LOCK.iter, hash: "SHA-256" },
+    base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+const P = { key: null, name: "", ver: 0 }; // 열려 있는 개인 비밀번호
 async function unseal(iv, ct, key = KEY) {
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(iv) }, key, b64d(ct));
   return TD.decode(pt);
@@ -111,12 +119,14 @@ async function unseal(iv, ct, key = KEY) {
 // ───────── 상태 ─────────
 const S = {
   month: TODAY.slice(0, 7),
-  tasks: [], vacs: [], notes: [],
+  tasks: [], vacs: [], notes: [], personal: [],
   checks: {},
   loaded: false,
+  itemDocs: [],
   dept: store("dept") || "all",
   hideDone: store("hideDone") === "1",
   showVac: store("showVac") !== "0",
+  showPersonal: store("showPersonal") !== "0",
   view: store("view") || "calendar",
   sel: TODAY,
 };
@@ -136,6 +146,14 @@ async function readDocs(docs) {
       try { v = JSON.parse(await unseal(d.iv, d.ct)); } catch (e) { v = null; } // 다른 비밀번호/손상 데이터는 무시
       cache.set(k, v);
     }
+    if (!v && P.key && d.kind === "personal") { // 내 개인 비밀번호로 잠긴 일정인지 확인
+      const pk = k + ":p" + P.ver;
+      v = cache.get(pk);
+      if (v === undefined) {
+        try { v = { ...JSON.parse(await unseal(d.iv, d.ct, P.key)), private: true }; } catch (e) { v = null; }
+        cache.set(pk, v);
+      }
+    }
     if (v) out.push({ ...v, id: doc.id, kind: d.kind, months: d.months || [] });
   }
   return out;
@@ -144,18 +162,15 @@ async function readDocs(docs) {
 let unsubs = [];
 function subscribe(month) {
   unsubs.forEach((u) => u()); unsubs = [];
-  S.loaded = false; S.tasks = []; S.vacs = []; S.notes = []; S.checks = {};
+  S.loaded = false; S.tasks = []; S.vacs = []; S.notes = []; S.personal = []; S.checks = {}; S.itemDocs = [];
   setSync("", "불러오는 중…");
   let gotItems = false, gotChecks = false;
   const done = () => { if (gotItems && gotChecks) { S.loaded = true; setSync("live", "실시간 공유 중"); } render(); };
   const onErr = (e) => { console.error(e); setSync("err", "연결 오류 — 새로고침 해주세요"); };
 
   unsubs.push(db.collection("items").where("months", "array-contains", month).onSnapshot(async (snap) => {
-    const list = await readDocs(snap.docs);
-    if (S.month !== month) return;
-    S.tasks = list.filter((x) => x.kind === "task").sort(taskOrder);
-    S.vacs = list.filter((x) => x.kind === "vacation").sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.name || "").localeCompare(b.name || ""));
-    S.notes = list.filter((x) => x.kind === "note").sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0));
+    S.itemDocs = snap.docs;
+    await processItems(month);
     gotItems = true; done();
   }, onErr));
 
@@ -167,6 +182,14 @@ function subscribe(month) {
     S.checks = map;
     gotChecks = true; done();
   }, onErr));
+}
+async function processItems(month) {
+  const list = await readDocs(S.itemDocs);
+  if (S.month !== month) return;
+  S.tasks = list.filter((x) => x.kind === "task").sort(taskOrder);
+  S.vacs = list.filter((x) => x.kind === "vacation").sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.name || "").localeCompare(b.name || ""));
+  S.notes = list.filter((x) => x.kind === "note").sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0));
+  S.personal = list.filter((x) => x.kind === "personal").sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.title || "").localeCompare(b.title || ""));
 }
 function taskOrder(a, b) {
   return (a.batch || "~").localeCompare(b.batch || "~") || (a.ord ?? 1e9) - (b.ord ?? 1e9) ||
@@ -183,6 +206,47 @@ async function saveItem(kind, data, id) {
   else await db.collection("items").add(payload);
 }
 async function deleteItem(id) { await db.collection("items").doc(id).delete(); }
+
+// 개인 일정: 비공개면 개인 비밀번호 키로, 공개면 사이트 키로 암호화
+async function savePersonal(data, id) {
+  const { id: _i, kind: _k, months: _m, private: priv, ...plain } = data;
+  if (priv && !P.key) throw new Error("locked");
+  const { iv, ct } = await seal(plain, priv ? P.key : KEY);
+  const payload = { kind: "personal", months: monthsOf(data.start, data.end), iv, ct, at: serverTime() };
+  if (id) await db.collection("items").doc(id).set(payload);
+  else await db.collection("items").add(payload);
+}
+
+// 개인 비밀번호 확인용 프로필 (이름 → 검증값). 내용은 사이트 키로 암호화
+async function loadProfiles(name) {
+  const snap = await db.collection("items").where("months", "array-contains", "profile").get();
+  const list = await readDocs(snap.docs);
+  return list.filter((p) => p.kind === "profile" && p.name === name);
+}
+async function unlockPersonal(name, pw, remember) {
+  const key = await personalKey(name, pw);
+  const profiles = await loadProfiles(name);
+  if (profiles.length) {
+    let ok = false;
+    for (const p of profiles) { try { await unseal(p.viv, p.vct, key); ok = true; break; } catch (e) {} }
+    if (!ok) return "wrong";
+  } else {
+    const v = await seal("personal-ok", key);
+    const { iv, ct } = await seal({ name, viv: v.iv, vct: v.ct });
+    await db.collection("items").add({ kind: "profile", months: ["profile"], iv, ct, at: serverTime() });
+  }
+  P.key = key; P.name = name; P.ver++;
+  store("pPw:" + name, remember ? pw : null);
+  await processItems(S.month); render();
+  return "ok";
+}
+function lockPersonal() {
+  if (P.name) store("pPw:" + P.name, null);
+  P.key = null; P.name = ""; P.ver++;
+  S.personal = S.personal.filter((x) => !x.private);
+  render();
+}
+async function hasProfile(name) { try { return (await loadProfiles(name)).length > 0; } catch (e) { return false; } }
 async function setCheck(entry, done) {
   const { iv, ct } = await seal({ done, by: userName(), at: Date.now() });
   await db.collection("checks").doc(entry.id).set({ months: entry.task.months, item: entry.id, iv, ct, at: serverTime() });
@@ -237,6 +301,12 @@ function checkables() {
 function dayEntries(date) {
   return entries().filter((e) => e.start <= date && date <= e.end && deptOk(e.task.dept) && !(S.hideDone && isDone(e.id)));
 }
+const isMine = (p) => p.name && p.name === userName();
+function dayPersonal(date) {
+  if (!S.showPersonal) return [];
+  return S.personal.filter((p) => p.start <= date && date <= (p.end || p.start) &&
+    (S.dept === "all" || !p.dept || p.dept === S.dept || isMine(p)) && !(S.hideDone && p.done));
+}
 function dayVacs(date) {
   if (!S.showVac) return [];
   const wd = dow(date);
@@ -250,6 +320,10 @@ function render() {
   $("#monthLabel").textContent = `${y}년 ${m}월`;
   $("#hideDone").checked = S.hideDone;
   $("#showVac").checked = S.showVac;
+  $("#showPersonal").checked = S.showPersonal;
+  const lb = $("#pLockBtn");
+  lb.textContent = P.key ? `🔓 ${P.name} 비공개 열림` : "🔒 내 비공개 일정 열기";
+  lb.classList.toggle("on", !!P.key);
   $$(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.view === S.view));
   $("#calendarView").hidden = S.view !== "calendar";
   $("#listView").hidden = S.view !== "list";
@@ -277,6 +351,15 @@ function renderSummary() {
   S.vacs.forEach((v) => { if (S.dept === "all" || v.dept === S.dept) vacDays.add(v.name); });
   html += `<div class="stat vac-stat"><div class="name">🌴 이번 달 휴가</div><div class="num">${vacDays.size}<small>명</small></div>
     <div class="late muted">${S.vacs.filter((v) => v.start <= TODAY && TODAY <= (v.end || v.start)).length ? `오늘 휴가 ${S.vacs.filter((v) => v.start <= TODAY && TODAY <= (v.end || v.start)).length}명` : ""}</div></div>`;
+  if (userName()) {
+    const mine = S.personal.filter(isMine);
+    const md2 = mine.filter((p) => p.done).length;
+    const pct = mine.length ? Math.round((md2 / mine.length) * 100) : 0;
+    html += `<button class="stat me-stat" data-add-personal="" style="--c:var(--me)"><div class="name">👤 내 일정 (${esc(userName())})</div>
+      <div class="num">${mine.length ? pct + "%" : "–"}<small>${md2}/${mine.length}</small></div>
+      <div class="bar"><span style="width:${pct}%"></span></div>
+      <div class="late muted">${mine.filter((p) => p.private).length ? `🔒 비공개 ${mine.filter((p) => p.private).length}건 포함` : "눌러서 개인 일정 추가"}</div></button>`;
+  }
   $("#summary").innerHTML = html;
 }
 
@@ -309,15 +392,21 @@ function renderCalendar() {
     const countCls = lateN ? "late" : list.length && doneN === list.length ? "all" : "";
     const count = list.length ? `<span class="dcount ${countCls}">${doneN}/${list.length}</span>` : "";
     const vacHtml = vacs.length ? `<div class="vac-line" title="${esc(vacs.map(vacLabel).join(", "))}">🌴 ${esc(vacs.slice(0, 3).map(vacLabel).join(", "))}${vacs.length > 3 ? ` 외 ${vacs.length - 3}` : ""}</div>` : "";
-    const MAX = vacs.length ? 3 : 4;
-    const chips = list.slice(0, MAX).map((e) => {
+    const pers = dayPersonal(ds).sort((a, b) => isMine(b) - isMine(a));
+    let budget = vacs.length ? 3 : 4;
+    const pShow = pers.slice(0, Math.min(pers.length, 2));
+    budget = Math.max(1, budget - pShow.length);
+    const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""}" title="${esc(p.name + " · " + p.title)}">
+        <input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${isMine(p) ? "" : "disabled"}><span>${p.private ? "🔒" : "👤"}${esc(isMine(p) ? "" : p.name + " ")}${esc(p.title)}</span></label>`).join("");
+    const chips = list.slice(0, budget).map((e) => {
       const done = isDone(e.id);
       return `<label class="task-chip ${done ? "done" : ""} ${isLate(e) ? "late" : ""}" style="--c:${color(e.task.dept)}" title="${esc(e.task.dept + " · " + (e.sub ? stripNum(e.task.title) + " › " : "") + e.title)}">
         <input type="checkbox" data-check="${esc(e.id)}" ${done ? "checked" : ""}><span>${esc(stripNum(e.title))}</span></label>`;
     }).join("");
-    const more = list.length > MAX ? `<div class="more">+${list.length - MAX}건 더보기</div>` : "";
-    const dots = `<div class="dots">${vacs.length ? '<i class="vac"></i>' : ""}${list.slice(0, 7).map((e) => `<i style="--c:${color(e.task.dept)}" class="${isDone(e.id) ? "done" : ""}"></i>`).join("")}</div>`;
-    html += `<div class="${cls}" data-date="${ds}"><div class="dhead"><span class="dnum">${d.getDate()}</span>${count}</div>${vacHtml}${chips}${more}${dots}</div>`;
+    const hidden = list.length - Math.min(list.length, budget) + (pers.length - pShow.length);
+    const more = hidden > 0 ? `<div class="more">+${hidden}건 더보기</div>` : "";
+    const dots = `<div class="dots">${vacs.length ? '<i class="vac"></i>' : ""}${pers.length ? '<i class="me"></i>' : ""}${list.slice(0, 7).map((e) => `<i style="--c:${color(e.task.dept)}" class="${isDone(e.id) ? "done" : ""}"></i>`).join("")}</div>`;
+    html += `<div class="${cls}" data-date="${ds}"><div class="dhead"><span class="dnum">${d.getDate()}</span>${count}</div>${vacHtml}${pChips}${chips}${more}${dots}</div>`;
   }
   $("#calGrid").innerHTML = html;
 }
@@ -370,18 +459,30 @@ function vacCard(v) {
     <button class="edit-btn" data-edit-vac="${esc(v.id)}" title="수정/삭제" aria-label="수정">✎</button></div>`;
 }
 
+function personalCard(p) {
+  const mine = isMine(p);
+  return `<div class="task pcard ${p.done ? "done" : ""} ${mine ? "mine" : ""}">
+    ${mine ? `<button class="edit-btn" data-edit-personal="${esc(p.id)}" title="수정/삭제" aria-label="수정">✎</button>` : ""}
+    <label class="task-row"><input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${mine ? "" : "disabled"}>
+      <div><div class="task-title">${esc(p.title)}</div>
+      <div class="meta"><span class="pname">${p.private ? "🔒 비공개 · " : "👤 "}${esc(p.name)}</span><span>📅 ${period(p.start, p.end)}</span>${p.memo ? `<span>${esc(p.memo)}</span>` : ""}${p.done && p.doneAt ? `<span class="by">✓ 완료</span>` : ""}</div></div></label></div>`;
+}
+
 function renderPanel() {
   const d = S.sel && S.sel.startsWith(S.month) ? S.sel : S.month + "-01";
   const list = dayEntries(d);
   const vacs = dayVacs(d);
+  const pers = dayPersonal(d).sort((a, b) => isMine(b) - isMine(a));
   const doneN = list.filter((e) => isDone(e.id)).length;
   const [, m, day] = d.split("-");
   $("#dayPanel").innerHTML = `<div class="panel-head">
       <div><h2>${+m}월 ${+day}일 (${WEEK[dow(d)]})${d === TODAY ? " · 오늘" : ""}</h2>
-      <p>${list.length ? `업무 ${list.length}건 · 완료 ${doneN}건` : "업무 없음"}${vacs.length ? ` · 휴가 ${vacs.length}명` : ""}</p></div>
-      <div class="panel-actions"><button class="small-btn" data-add-task="${d}">+ 업무</button><button class="small-btn vac" data-add-vac="${d}">+ 휴가</button></div></div>
+      <p>${list.length ? `업무 ${list.length}건 · 완료 ${doneN}건` : "업무 없음"}${vacs.length ? ` · 휴가 ${vacs.length}명` : ""}${pers.length ? ` · 개인 ${pers.length}건` : ""}</p></div>
+      <div class="panel-actions"><button class="small-btn" data-add-task="${d}">+ 업무</button><button class="small-btn me" data-add-personal="${d}">+ 개인</button><button class="small-btn vac" data-add-vac="${d}">+ 휴가</button></div></div>
     <div class="panel-body">
-      ${vacs.length ? `<div class="sec-title">휴가</div>${vacs.map(vacCard).join("")}<div class="sec-title">업무</div>` : ""}
+      ${vacs.length ? `<div class="sec-title">휴가</div>${vacs.map(vacCard).join("")}` : ""}
+      ${pers.length ? `<div class="sec-title">개인 일정</div>${pers.map(personalCard).join("")}` : ""}
+      ${vacs.length || pers.length ? `<div class="sec-title">부서 업무</div>` : ""}
       ${!S.loaded ? '<div class="empty">불러오는 중…</div>' : list.length ? list.map((e) => (e.sub ? subCard(e) : taskCard(e.task))).join("") : '<div class="empty">이 날 마감인 업무가 없습니다.<br>위의 <b>+ 업무</b>로 추가할 수 있습니다.</div>'}
     </div>`;
 }
@@ -399,6 +500,10 @@ function renderList() {
   }).join("");
   const vacs = S.showVac ? S.vacs.filter((v) => S.dept === "all" || !v.dept || v.dept === S.dept) : [];
   if (vacs.length) html += `<section class="group"><h3>🌴 이번 달 휴가<small>${vacs.length}건</small></h3><div class="body">${vacs.map(vacCard).join("")}</div></section>`;
+  if (S.showPersonal) {
+    const pers = S.personal.filter((p) => !(S.hideDone && p.done)).sort((a, b) => isMine(b) - isMine(a) || (a.start || "").localeCompare(b.start || ""));
+    if (pers.length) html = `<section class="group me-group"><h3>👤 개인 일정<small>${pers.length}건</small></h3><div class="body">${pers.map(personalCard).join("")}</div></section>` + html;
+  }
   if (!html) html = `<div class="empty big">${S.loaded ? "이 달에 등록된 업무가 없습니다. <b>엑셀 업로드</b> 또는 <b>+ 업무 추가</b>로 시작하세요." : "불러오는 중…"}</div>`;
   $("#listView").innerHTML = html;
 }
@@ -535,6 +640,103 @@ function vacForm(vac, date) {
     });
   });
 }
+// ───────── 개인 일정 ─────────
+function pwFields(exists) {
+  return exists
+    ? `<label>개인 비밀번호<input type="password" name="ppw" autocomplete="off" required></label>`
+    : `<p class="hint">처음 사용하는 이름입니다. <b>개인 비밀번호</b>를 정해 주세요. 잊어버리면 비공개 일정을 다시 볼 수 없습니다.</p>
+       <div class="row2"><label>개인 비밀번호 (4자 이상)<input type="password" name="ppw" minlength="4" autocomplete="new-password" required></label>
+       <label>한 번 더 입력<input type="password" name="ppw2" minlength="4" autocomplete="new-password" required></label></div>`;
+}
+async function tryUnlockFromForm(f) {
+  const pw = f.ppw.value;
+  if (f.ppw2 && pw !== f.ppw2.value) { toast("두 비밀번호가 다릅니다."); return false; }
+  const r = await unlockPersonal(userName(), pw, f.premember ? f.premember.checked : false);
+  if (r === "wrong") { toast("개인 비밀번호가 맞지 않습니다."); f.ppw.select(); return false; }
+  return true;
+}
+
+async function unlockForm() {
+  if (!requireName()) return;
+  if (P.key) { lockPersonal(); toast("비공개 일정을 잠갔습니다."); return; }
+  const name = userName();
+  const exists = await hasProfile(name);
+  openModal(`<form class="form" id="pUnlock">
+    <h2>🔒 ${esc(name)}님의 비공개 일정</h2>
+    <p class="hint">개인 비밀번호로 잠긴 일정은 본인만 볼 수 있습니다. 사이트 관리자도 내용을 볼 수 없습니다.</p>
+    ${pwFields(exists)}
+    <label class="switch"><input type="checkbox" name="premember"><span>이 기기에서 기억하기 (공용 PC에서는 끄세요)</span></label>
+    <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">${exists ? "열기" : "비밀번호 정하고 열기"}</button></div>
+  </form>`, (card) => {
+    const f = $("#pUnlock", card);
+    f.onsubmit = async (ev) => {
+      ev.preventDefault(); busy(f, true);
+      try { if (await tryUnlockFromForm(f)) { closeModal(); toast("비공개 일정이 열렸습니다."); } }
+      catch (e) { console.error(e); toast("확인하지 못했습니다."); }
+      busy(f, false);
+    };
+  });
+}
+
+async function personalForm(item, date) {
+  if (!requireName()) return;
+  if (item && !isMine(item)) { toast("본인 일정만 수정할 수 있습니다."); return; }
+  const p = item || { title: "", start: date || S.sel, end: "", memo: "", private: false };
+  const needPw = !P.key;
+  const exists = needPw ? await hasProfile(userName()) : true;
+  openModal(`<form class="form" id="pForm">
+    <h2>${item ? "개인 일정 수정" : "👤 개인 일정 추가"} <small class="muted">· ${esc(userName())}</small></h2>
+    <label>할 일 *<textarea name="title" rows="2" required maxlength="300">${esc(p.title)}</textarea></label>
+    <div class="row2">
+      <label>날짜(시작) *<input type="date" name="start" value="${esc(p.start || "")}" required></label>
+      <label>종료일 <small>(하루면 비워두기)</small><input type="date" name="end" value="${esc(p.end && p.end !== p.start ? p.end : "")}"></label>
+    </div>
+    <label>메모<input name="memo" value="${esc(p.memo || "")}" maxlength="200"></label>
+    <label class="switch priv-switch"><input type="checkbox" name="priv" ${p.private ? "checked" : ""}><span>🔒 <b>나만 보기</b> — 개인 비밀번호로 잠가서 다른 사람에게 보이지 않게 합니다</span></label>
+    <div id="pPwBox" hidden>${needPw ? pwFields(exists) + `<label class="switch"><input type="checkbox" name="premember"><span>이 기기에서 개인 비밀번호 기억하기</span></label>` : ""}</div>
+    <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">저장</button></div>
+    ${item ? deleteRow("일정") : ""}
+  </form>`, (card) => {
+    const f = $("#pForm", card);
+    const box = $("#pPwBox", card);
+    const sync = () => {
+      const show = f.priv.checked && needPw;
+      box.hidden = !show;
+      $$("input[type=password]", box).forEach((i) => { i.required = show; });
+    };
+    f.priv.onchange = sync; sync();
+    f.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const v = Object.fromEntries(new FormData(f));
+      const title = v.title.trim();
+      if (!title || !isISO(v.start)) return;
+      if (v.end && v.end < v.start) { toast("종료일이 시작일보다 빠릅니다."); return; }
+      busy(f, true);
+      try {
+        if (f.priv.checked && !P.key && !(await tryUnlockFromForm(f))) { busy(f, false); return; }
+        const data = { ...(item || {}), name: userName(), dept: (item && item.dept) || store("myDept") || "", title, start: v.start, end: v.end || v.start,
+          memo: v.memo.trim(), done: item ? !!item.done : false, private: f.priv.checked };
+        await savePersonal(data, item && item.id);
+        closeModal(); toast(item ? "일정을 수정했습니다." : f.priv.checked ? "🔒 비공개 일정을 추가했습니다." : "개인 일정을 추가했습니다.");
+        if (!item && !v.start.startsWith(S.month)) setMonth(v.start.slice(0, 7), v.start);
+      } catch (e) { console.error(e); toast("저장하지 못했습니다."); busy(f, false); }
+    };
+    if (item) wireDelete(card, async () => {
+      try { await deleteItem(item.id); closeModal(); toast("일정을 삭제했습니다."); } catch (e) { console.error(e); toast("삭제하지 못했습니다."); }
+    });
+  });
+}
+
+async function togglePersonal(id, done) {
+  const p = S.personal.find((x) => x.id === id);
+  if (!p) return;
+  if (!isMine(p)) { toast("본인 일정만 체크할 수 있습니다."); render(); return; }
+  const prev = p.done;
+  p.done = done; p.doneAt = done ? Date.now() : null; render();
+  try { await savePersonal(p, p.id); }
+  catch (e) { console.error(e); p.done = prev; render(); toast("저장하지 못했습니다."); }
+}
+
 function busy(form, on) { $$("button", form).forEach((b) => (b.disabled = on)); }
 
 // ───────── 엑셀 업로드 ─────────
@@ -774,9 +976,16 @@ function shiftMonth(step) {
 function wireEvents() {
   const nameInput = $("#userName");
   nameInput.value = store("userName") || "";
-  nameInput.addEventListener("input", () => { store("userName", nameInput.value.trim()); $(".who").classList.remove("need"); });
+  let nameTimer;
+  nameInput.addEventListener("input", () => {
+    store("userName", nameInput.value.trim()); $(".who").classList.remove("need");
+    if (P.key && P.name !== userName()) lockPersonal(); // 이름이 바뀌면 개인 잠금 해제 상태 해제
+    clearTimeout(nameTimer); nameTimer = setTimeout(() => { autoUnlock(); render(); }, 600);
+  });
 
   document.addEventListener("change", async (ev) => {
+    const pc = ev.target.closest("input[data-pcheck]");
+    if (pc) { if (!requireName()) { pc.checked = !pc.checked; return; } togglePersonal(pc.dataset.pcheck, pc.checked); return; }
     const cb = ev.target.closest("input[data-check]");
     if (!cb) return;
     const id = cb.dataset.check;
@@ -799,6 +1008,9 @@ function wireEvents() {
     if ((el = t.closest("[data-edit-vac]"))) { vacForm(S.vacs.find((x) => x.id === el.dataset.editVac)); return; }
     if ((el = t.closest("[data-add-task]"))) { taskForm(null, el.dataset.addTask || S.sel); return; }
     if ((el = t.closest("[data-add-vac]"))) { vacForm(null, el.dataset.addVac || S.sel); return; }
+    if ((el = t.closest("[data-edit-personal]"))) { ev.preventDefault(); personalForm(S.personal.find((x) => x.id === el.dataset.editPersonal)); return; }
+    if ((el = t.closest("[data-add-personal]"))) { personalForm(null, el.dataset.addPersonal || S.sel); return; }
+    if (t.closest("#pLockBtn")) { unlockForm(); return; }
     if (t.closest("#uploadBtn")) { uploadForm(); return; }
     if ((el = t.closest("[data-dept]"))) {
       const d = el.dataset.dept;
@@ -817,6 +1029,7 @@ function wireEvents() {
 
   $("#hideDone").addEventListener("change", (e) => { S.hideDone = e.target.checked; store("hideDone", S.hideDone ? "1" : "0"); render(); });
   $("#showVac").addEventListener("change", (e) => { S.showVac = e.target.checked; store("showVac", S.showVac ? "1" : "0"); render(); });
+  $("#showPersonal").addEventListener("change", (e) => { S.showPersonal = e.target.checked; store("showPersonal", S.showPersonal ? "1" : "0"); render(); });
   $("#prevMonth").addEventListener("click", () => shiftMonth(-1));
   $("#nextMonth").addEventListener("click", () => shiftMonth(1));
   $("#todayBtn").addEventListener("click", () => setMonth(TODAY.slice(0, 7), TODAY));
@@ -838,4 +1051,14 @@ async function boot() {
     return;
   }
   setMonth(S.month, S.sel);
+  autoUnlock();
+}
+
+// 이 기기에 기억된 개인 비밀번호가 있으면 자동으로 열기
+async function autoUnlock() {
+  const name = userName();
+  if (!db || !name || P.key) return;
+  const pw = store("pPw:" + name);
+  if (!pw) return;
+  try { if ((await unlockPersonal(name, pw, true)) === "wrong") store("pPw:" + name, null); } catch (e) { console.error(e); }
 }
