@@ -1,0 +1,4 @@
+plans.local.json
+.site-password
+__pycache__/
+*.xlsx
