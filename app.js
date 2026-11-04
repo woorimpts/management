@@ -260,15 +260,19 @@ function setSync(cls, text) {
 }
 
 // ───────── 부서 색상 ─────────
-let DEPTS = [];
+// 화면에 보이는 부서 순서. 여기 없는 부서는 그 뒤에 등장 순서대로
+const DEPT_ORDER = ["총괄", "총무팀(인사)", "총무팀(총무)", "재무팀"];
+let DEPTS = [], COLOR_DEPTS = [];
 function computeDepts() {
   const ds = [];
   S.tasks.forEach((t) => { if (t.dept && !ds.includes(t.dept)) ds.push(t.dept); });
   S.vacs.forEach((v) => { if (v.dept && !ds.includes(v.dept)) ds.push(v.dept); });
-  DEPTS = ds;
+  COLOR_DEPTS = ds; // 색상은 기존처럼 등장 순서로 (순서를 바꿔도 부서 색은 그대로)
+  const rank = (d) => (DEPT_ORDER.includes(d) ? DEPT_ORDER.indexOf(d) : DEPT_ORDER.length + ds.indexOf(d));
+  DEPTS = [...ds].sort((a, b) => rank(a) - rank(b));
   if (S.dept !== "all" && !ds.includes(S.dept) && S.loaded) S.dept = "all";
 }
-const color = (dept) => (DEPTS.includes(dept) ? `var(--d${DEPTS.indexOf(dept) % 8})` : "var(--d-none)");
+const color = (dept) => (COLOR_DEPTS.includes(dept) ? `var(--d${COLOR_DEPTS.indexOf(dept) % 8})` : "var(--d-none)");
 const deptOk = (d) => S.dept === "all" || S.dept === d;
 const knownDepts = () => {
   const saved = (store("knownDepts") || "").split("|").filter(Boolean);
