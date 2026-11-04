@@ -22,7 +22,7 @@ const md = (s) => { const [, m, d] = s.split("-"); return `${+m}/${+d}`; };
 const dow = (s) => new Date(s + "T00:00").getDay();
 const mdw = (s) => `${md(s)}(${WEEK[dow(s)]})`;
 const period = (a, b) => (!a ? "" : !b || a === b ? mdw(a) : `${mdw(a)} ~ ${mdw(b)}`);
-const stripNum = (t) => t.replace(/^\d+\s*\.\s*/, "");
+const stripNum = (t) => String(t ?? "").replace(/^\d+\s*[.)]?\s+|^\d+\s*[.)]\s*/, "");
 const isISO = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
 
 function store(key, val) {
@@ -440,13 +440,13 @@ function taskCard(t) {
   return `<div class="task ${done ? "done" : ""}" style="--c:${color(t.dept)}">
     <button class="edit-btn" data-edit-task="${esc(t.id)}" title="수정/삭제" aria-label="수정">✎</button>
     <label class="task-row"><input type="checkbox" data-check="${esc(t.id)}" ${done ? "checked" : ""}>
-      <div><div class="task-title">${esc(t.title)}</div><div class="meta">${meta}${added}</div></div></label>${subs}</div>`;
+      <div><div class="task-title">${esc(stripNum(t.title))}</div><div class="meta">${meta}${added}</div></div></label>${subs}</div>`;
 }
 
 function subCard(e) {
   const s = e.sub, t = e.task, done = isDone(s.id);
   return `<div class="task ${done ? "done" : ""}" style="--c:${color(t.dept)}">
-    <div class="parent-ref">${esc(t.title)} ›</div>
+    <div class="parent-ref">${esc(stripNum(t.title))} ›</div>
     <label class="task-row"><input type="checkbox" data-check="${esc(s.id)}" ${done ? "checked" : ""}>
       <div><div class="task-title">${esc(s.title)}</div>
       <div class="meta"><span class="dept">${esc(t.dept)}</span><span>📅 ${period(s.start, s.end)}</span>${isLate(e) ? '<span class="late">기한 지남</span>' : ""}${checkInfo(s.id)}</div></div></label></div>`;
@@ -561,7 +561,7 @@ function taskForm(task, date) {
   const t = task || { start: date || S.sel, end: "", dept: S.dept !== "all" ? S.dept : store("myDept") || "", title: "", owner: userName(), memo: "" };
   openModal(`<form class="form" id="taskForm">
     <h2>${task ? "업무 수정" : "업무 추가"}</h2>
-    <label>업무 내용 *<textarea name="title" rows="2" required maxlength="300">${esc(t.title)}</textarea></label>
+    <label>업무 내용 *<textarea name="title" rows="2" required maxlength="300">${esc(stripNum(t.title))}</textarea></label>
     <div class="row2">
       <label>날짜(시작) *<input type="date" name="start" value="${esc(t.start || "")}" required></label>
       <label>종료일 <small>(하루면 비워두기)</small><input type="date" name="end" value="${esc(t.end && t.end !== t.start ? t.end : "")}"></label>
@@ -824,7 +824,7 @@ function parseSheet(rows, fileName) {
     const looksSub = /^[-·•\[]/.test(t) || (t.startsWith("※") && parent);
     const isParent = !parent || (numbered ? /^\d+\s*\./.test(t) : !looksSub);
     if (isParent) {
-      parent = { dept, title: t, start: d.start, end: d.end, dateText: d.start ? "" : d.raw, due: due.start || "", dueText: due.start ? "" : due.raw, memo, owner, subs: [] };
+      parent = { dept, title: stripNum(t), start: d.start, end: d.end, dateText: d.start ? "" : d.raw, due: due.start || "", dueText: due.start ? "" : due.raw, memo, owner, subs: [] };
       tasks.push(parent); child = null; return;
     }
     if (!/^[-·•※\[]/.test(t) && child) { child.title += " " + t; return; } // 이어지는 줄
