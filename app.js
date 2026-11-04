@@ -532,6 +532,7 @@ function openModal(html, onMount) {
   m.hidden = false;
   document.body.classList.add("modal-open");
   if (onMount) onMount($(".modal-card", m));
+  deptCombo($(".modal-card", m));
   const first = $(".modal-card input:not([type=hidden]):not([type=checkbox]), .modal-card textarea", m);
   if (first && window.innerWidth > 720) setTimeout(() => first.focus(), 30);
 }
@@ -545,8 +546,34 @@ function requireName() {
   return false;
 }
 
-function deptDatalist() {
-  return `<datalist id="deptList">${knownDepts().map((d) => `<option value="${esc(d)}">`).join("")}</datalist>`;
+// 부서 입력칸: 누르면 부서 목록, 글자를 치면 그 글자가 들어간 부서만 보여줌 (예: '재' → 재무팀)
+function deptCombo(card) {
+  $$("input[data-dept-combo]", card).forEach((input) => {
+    const pop = document.createElement("ul");
+    pop.className = "dept-pop"; pop.hidden = true; pop.setAttribute("role", "listbox");
+    input.after(pop);
+    let items = [], cur = -1;
+    const show = () => {
+      const q = input.value.trim();
+      items = knownDepts().filter((d) => d.includes(q) && d !== q);
+      cur = -1;
+      pop.innerHTML = items.map((d, i) => `<li role="option" data-i="${i}">${esc(d)}</li>`).join("");
+      pop.hidden = !items.length;
+    };
+    const pick = (i) => { input.value = items[i]; pop.hidden = true; };
+    const mark = () => $$("li", pop).forEach((li, i) => li.classList.toggle("on", i === cur));
+    input.addEventListener("input", show);
+    input.addEventListener("focus", show);
+    input.addEventListener("blur", () => setTimeout(() => (pop.hidden = true), 150));
+    pop.addEventListener("mousedown", (ev) => { const li = ev.target.closest("li"); if (li) { ev.preventDefault(); pick(+li.dataset.i); } });
+    input.addEventListener("keydown", (ev) => {
+      if (pop.hidden || ev.isComposing) return;
+      if (ev.key === "ArrowDown") { cur = (cur + 1) % items.length; mark(); ev.preventDefault(); }
+      else if (ev.key === "ArrowUp") { cur = (cur - 1 + items.length) % items.length; mark(); ev.preventDefault(); }
+      else if (ev.key === "Enter" && cur >= 0) { pick(cur); ev.preventDefault(); }
+      else if (ev.key === "Escape") { pop.hidden = true; ev.stopPropagation(); }
+    });
+  });
 }
 
 function deleteRow(label) {
@@ -571,7 +598,7 @@ function subRow(s, idx) {
 
 function taskForm(task, date) {
   if (!requireName()) return;
-  const t = task || { start: date || S.sel, end: "", dept: S.dept !== "all" ? S.dept : store("myDept") || "", title: "", owner: userName(), memo: "" };
+  const t = task || { start: date || S.sel, end: "", dept: "", title: "", owner: userName(), memo: "" };
   openModal(`<form class="form" id="taskForm">
     <h2>${task ? "업무 수정" : "업무 추가"}</h2>
     <label>업무 내용 *<textarea name="title" rows="2" required maxlength="300">${esc(stripNum(t.title))}</textarea></label>
@@ -580,11 +607,10 @@ function taskForm(task, date) {
       <label>종료일 <small>(하루면 비워두기)</small><input type="date" name="end" value="${esc(t.end && t.end !== t.start ? t.end : "")}"></label>
     </div>
     <div class="row2">
-      <label>담당부서 *<input name="dept" list="deptList" value="${esc(t.dept || "")}" required maxlength="30" placeholder="예: 재무팀"></label>
+      <label>담당부서 *<input name="dept" data-dept-combo autocomplete="off" value="${esc(t.dept || "")}" required maxlength="30" placeholder="예: 재무팀"></label>
       <label>담당자<input name="owner" value="${esc(t.owner || "")}" maxlength="30"></label>
     </div>
     <label>비고<input name="memo" value="${esc(t.memo || "")}" maxlength="200"></label>
-    ${deptDatalist()}
     <div class="sub-edit">
       <div class="sub-edit-head">세부 항목 <small>(날짜를 비우면 업무 날짜를 따릅니다)</small></div>
       <div id="subRows">${(t.subs || []).map((s, i) => subRow(s, i)).join("")}</div>
@@ -639,12 +665,12 @@ function taskForm(task, date) {
 
 function vacForm(vac, date) {
   if (!requireName()) return;
-  const v = vac || { name: userName(), dept: store("myDept") || "", start: date || S.sel, end: "", type: "연차", memo: "" };
+  const v = vac || { name: userName(), dept: "", start: date || S.sel, end: "", type: "연차", memo: "" };
   openModal(`<form class="form" id="vacForm">
     <h2>${vac ? "휴가 수정" : "휴가 등록"}</h2>
     <div class="row2">
       <label>이름 *<input name="name" value="${esc(v.name)}" required maxlength="20"></label>
-      <label>부서<input name="dept" list="deptList" value="${esc(v.dept || "")}" maxlength="30"></label>
+      <label>부서<input name="dept" data-dept-combo autocomplete="off" value="${esc(v.dept || "")}" maxlength="30"></label>
     </div>
     <div class="row2">
       <label>시작일 *<input type="date" name="start" value="${esc(v.start || "")}" required></label>
@@ -652,7 +678,6 @@ function vacForm(vac, date) {
     </div>
     <label>종류<select name="type">${VAC_TYPES.map((t) => `<option ${t === v.type ? "selected" : ""}>${t}</option>`).join("")}</select></label>
     <label>메모<input name="memo" value="${esc(v.memo || "")}" maxlength="100" placeholder="예: 업무 대행 홍길동"></label>
-    ${deptDatalist()}
     <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">저장</button></div>
     ${vac ? deleteRow("휴가") : ""}
   </form>`, (card) => {
@@ -680,16 +705,15 @@ function vacForm(vac, date) {
 // 게시 기간에 걸친 달마다 공지 칸에 표시. 엑셀 공지는 기간 없이 업로드한 달에만 표시
 function noteForm(note) {
   if (!requireName()) return;
-  const n = note || { dept: store("myDept") || "", text: "", start: S.month + "-01", end: "" };
+  const n = note || { dept: "", text: "", start: S.month + "-01", end: "" };
   openModal(`<form class="form" id="noteForm">
     <h2>${note ? "공지 수정" : "📢 공지 등록"}</h2>
     <label>내용 *<textarea name="text" rows="3" required maxlength="500">${esc(n.text)}</textarea></label>
-    <label>부서<input name="dept" list="deptList" value="${esc(n.dept || "")}" maxlength="30" placeholder="비우면 전체 공지"></label>
+    <label>부서<input name="dept" data-dept-combo autocomplete="off" value="${esc(n.dept || "")}" maxlength="30" placeholder="비우면 전체 공지"></label>
     <div class="row2">
       <label>게시 시작일<input type="date" name="start" value="${esc(n.start || "")}"></label>
       <label>게시 종료일 <small>(비우면 그 달만)</small><input type="date" name="end" value="${esc(n.end && n.end !== n.start ? n.end : "")}"></label>
     </div>
-    ${deptDatalist()}
     <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">저장</button></div>
     ${note ? deleteRow("공지") : ""}
   </form>`, (card) => {

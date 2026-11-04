@@ -297,6 +297,14 @@ body.modal-open { overflow: hidden; }
 .form h2 { margin: 0 0 2px; font-size: 18px; }
 .form label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 500; color: var(--muted); }
 .form label small { font-weight: 400; }
+.form label { position: relative; }
+.dept-pop {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 5; margin: 4px 0 0; padding: 4px; list-style: none;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.15);
+  max-height: 200px; overflow: auto;
+}
+.dept-pop li { padding: 8px 10px; border-radius: 6px; font-size: 14px; font-weight: 400; color: var(--text); cursor: pointer; }
+.dept-pop li:hover, .dept-pop li.on { background: var(--surface-2); }
 .sub-edit { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .sub-edit-head { font-size: 13px; font-weight: 500; color: var(--muted); }
 .sub-edit-head small { font-weight: 400; }
