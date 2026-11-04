@@ -294,6 +294,14 @@ body.modal-open { overflow: hidden; }
 .form h2 { margin: 0 0 2px; font-size: 18px; }
 .form label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 500; color: var(--muted); }
 .form label small { font-weight: 400; }
+.sub-edit { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.sub-edit-head { font-size: 13px; font-weight: 500; color: var(--muted); }
+.sub-edit-head small { font-weight: 400; }
+#subRows { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+#subRows:empty { display: none; }
+.sub-row { display: grid; grid-template-columns: 1fr 1fr 26px; gap: 6px; align-items: center; padding: 8px; border-radius: 9px; border: 1px solid var(--line); }
+.sub-row [data-f=title] { grid-column: 1 / -1; }
+.form .sub-row input:not([type=checkbox]) { height: 34px; font-size: 13px; padding: 0 8px; }
 .form input:not([type=checkbox]):not([type=radio]), .form textarea, .form select {
   height: 40px; padding: 0 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface-2);
   font: inherit; font-size: 14px; color: var(--text); width: 100%; min-width: 0;

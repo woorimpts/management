@@ -447,6 +447,7 @@ function taskCard(t) {
 function subCard(e) {
   const s = e.sub, t = e.task, done = isDone(s.id);
   return `<div class="task ${done ? "done" : ""}" style="--c:${color(t.dept)}">
+    <button class="edit-btn" data-edit-task="${esc(t.id)}" title="수정/삭제" aria-label="수정">✎</button>
     <div class="parent-ref">${esc(stripNum(t.title))} ›</div>
     <label class="task-row"><input type="checkbox" data-check="${esc(s.id)}" ${done ? "checked" : ""}>
       <div><div class="task-title">${esc(s.title)}</div>
@@ -559,6 +560,15 @@ function wireDelete(card, fn) {
   $("[data-del-yes]", card).onclick = fn;
 }
 
+function subRow(s, idx) {
+  return `<div class="sub-row" data-idx="${idx}">
+    <input data-f="title" value="${esc(s ? s.title : "")}" maxlength="300" placeholder="세부 항목 내용" aria-label="세부 항목 내용">
+    <input type="date" data-f="start" value="${esc(s && s.start || "")}" aria-label="시작일">
+    <input type="date" data-f="end" value="${esc(s && s.end && s.end !== s.start ? s.end : "")}" aria-label="종료일">
+    <button type="button" class="edit-btn" data-sub-del title="삭제" aria-label="세부 항목 삭제">✕</button>
+  </div>`;
+}
+
 function taskForm(task, date) {
   if (!requireName()) return;
   const t = task || { start: date || S.sel, end: "", dept: S.dept !== "all" ? S.dept : store("myDept") || "", title: "", owner: userName(), memo: "" };
@@ -575,24 +585,47 @@ function taskForm(task, date) {
     </div>
     <label>비고<input name="memo" value="${esc(t.memo || "")}" maxlength="200"></label>
     ${deptDatalist()}
-    ${task && (task.subs || []).length ? `<p class="hint">세부 항목 ${task.subs.length}개는 그대로 유지됩니다.</p>` : ""}
+    <div class="sub-edit">
+      <div class="sub-edit-head">세부 항목 <small>(날짜를 비우면 업무 날짜를 따릅니다)</small></div>
+      <div id="subRows">${(t.subs || []).map((s, i) => subRow(s, i)).join("")}</div>
+      <button type="button" class="small-btn" data-sub-add>+ 세부 항목 추가</button>
+    </div>
     <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">저장</button></div>
     ${task ? deleteRow("업무") : ""}
   </form>`, (card) => {
     const f = $("#taskForm", card);
+    card.addEventListener("click", (ev) => {
+      if (ev.target.closest("[data-sub-add]")) {
+        $("#subRows", card).insertAdjacentHTML("beforeend", subRow(null, ""));
+        $("#subRows .sub-row:last-child input", card).focus();
+      } else if (ev.target.closest("[data-sub-del]")) ev.target.closest(".sub-row").remove();
+    });
     f.onsubmit = async (ev) => {
       ev.preventDefault();
       const v = Object.fromEntries(new FormData(f));
       const title = v.title.trim(), dept = v.dept.trim();
       if (!title || !dept || !isISO(v.start)) return;
       if (v.end && v.end < v.start) { toast("종료일이 시작일보다 빠릅니다."); return; }
-      const data = { ...(task || {}), title, dept, start: v.start, end: v.end || v.start, owner: v.owner.trim(), memo: v.memo.trim(), dateText: "" };
-      if (!task) { data.src = "manual"; data.by = userName(); data.subs = []; }
-      // 날짜가 바뀌면 세부항목 날짜 표시 재계산
-      (data.subs || []).forEach((s) => { s.own = !!s.start && (s.start !== data.start || (s.end || s.start) !== data.end); });
+      const id = task ? task.id : db.collection("items").doc().id;
+      // 세부 항목: 기존 항목은 id를 유지해야 체크 기록이 이어짐
+      const subs = [];
+      for (const row of $$(".sub-row", f)) {
+        const st = $("[data-f=title]", row).value.trim(), ss = $("[data-f=start]", row).value, se = $("[data-f=end]", row).value;
+        if (!st) continue;
+        if (ss && se && se < ss) { toast(`세부 항목 '${st}'의 종료일이 시작일보다 빠릅니다.`); return; }
+        const old = row.dataset.idx !== "" ? task.subs[+row.dataset.idx] : null;
+        const sub = { ...(old || {}), title: st, start: ss || null, end: ss ? se || ss : null };
+        if (ss) sub.dateText = "";
+        if (!sub.id) sub.id = `${id}~${Date.now().toString(36)}${subs.length}`;
+        subs.push(sub);
+      }
+      const data = { ...(task || {}), title, dept, start: v.start, end: v.end || v.start, owner: v.owner.trim(), memo: v.memo.trim(), dateText: "", subs };
+      if (!task) { data.src = "manual"; data.by = userName(); }
+      // 업무와 날짜가 다른 세부항목만 달력에 따로 표시
+      data.subs.forEach((s) => { s.own = !!s.start && (s.start !== data.start || (s.end || s.start) !== data.end); });
       busy(f, true);
       try {
-        await saveItem("task", data, task && task.id);
+        await saveItem("task", data, id);
         rememberDept(dept); store("myDept", dept);
         closeModal(); toast(task ? "업무를 수정했습니다." : "업무를 추가했습니다.");
         if (!task && !v.start.startsWith(S.month)) setMonth(v.start.slice(0, 7), v.start);
