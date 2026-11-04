@@ -119,7 +119,7 @@ body.locked > :not(.lock):not(script) { display: none !important; }
 .stat.on { outline: 2px solid var(--c, var(--accent)); outline-offset: -2px; }
 .stat .name { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .stat .name i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
-.stat .num { font-size: 22px; font-weight: 700; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+.stat .num { font-size: 16px; font-weight: 700; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
 .stat .num small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 4px; }
 .stat .bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .stat .bar span { display: block; height: 100%; background: var(--c, var(--accent)); border-radius: 3px; transition: width .3s; }
@@ -354,7 +354,7 @@ body.modal-open { overflow: hidden; }
   .who input { width: 96px; }
   .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .stat { padding: 10px 12px; }
-  .stat .num { font-size: 18px; }
+  .stat .num { font-size: 15px; }
   .cell { min-height: 58px; padding: 4px 3px; align-items: center; }
   .dhead { flex-direction: column; gap: 2px; }
   .dcount { font-size: 10px; }
