@@ -22,7 +22,7 @@ const md = (s) => { const [, m, d] = s.split("-"); return `${+m}/${+d}`; };
 const dow = (s) => new Date(s + "T00:00").getDay();
 const mdw = (s) => `${md(s)}(${WEEK[dow(s)]})`;
 const period = (a, b) => (!a ? "" : !b || a === b ? mdw(a) : `${mdw(a)} ~ ${mdw(b)}`);
-const stripNum = (t) => String(t ?? "").replace(/^\d+\s*[.)]?\s+|^\d+\s*[.)]\s*/, "");
+const stripNum = (t) => String(t ?? "").replace(/^(?:\d+\s*[.)]\s*|\d+\s+)+/, "");
 const isISO = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
 
 function store(key, val) {
@@ -859,6 +859,38 @@ function downloadTemplate() {
   }).catch(() => toast("양식을 만들지 못했습니다. 인터넷 연결을 확인해 주세요."));
 }
 
+// ───────── 엑셀 다운로드 ─────────
+// 지금 보고 있는 달의 업무·휴가. 업로드 양식과 같은 열 순서라 그대로 다시 올릴 수 있음 (개인 일정은 제외)
+function downloadMonth() {
+  if (!S.loaded) { toast("아직 불러오는 중입니다. 잠시 후 다시 눌러 주세요."); return; }
+  ensureXLSX().then(() => {
+    const doneCols = (id) => {
+      const c = id && S.checks[id];
+      if (!c || !c.done) return ["", "", ""];
+      const t = new Date(c.at);
+      return ["완료", c.by || "", `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`];
+    };
+    const aoa = [["일자", "종료일", "담당부서", "업무내용", "담당자", "비고", "완료여부", "완료자", "완료시각"]];
+    S.tasks.forEach((t) => {
+      aoa.push([t.start || t.dateText || "", t.end && t.end !== t.start ? t.end : "", t.dept || "", stripNum(t.title), t.owner || "", t.memo || "", ...doneCols(t.id)]);
+      (t.subs || []).forEach((s) => {
+        aoa.push([s.start || s.dateText || "", s.end && s.end !== s.start ? s.end : "", t.dept || "", "- " + s.title, "", s.memo || "", ...doneCols(s.own && s.id)]);
+      });
+    });
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = [{ wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 48 }, { wch: 10 }, { wch: 16 }, { wch: 8 }, { wch: 10 }, { wch: 16 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "업무계획");
+    if (S.vacs.length) {
+      const vs = XLSX.utils.aoa_to_sheet([["이름", "부서", "시작일", "종료일", "종류", "메모"],
+        ...S.vacs.map((v) => [v.name || "", v.dept || "", v.start || "", v.end && v.end !== v.start ? v.end : "", v.type || "", v.memo || ""])]);
+      vs["!cols"] = [{ wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 24 }];
+      XLSX.utils.book_append_sheet(wb, vs, "휴가");
+    }
+    XLSX.writeFile(wb, `업무계획_${S.month}.xlsx`);
+  }).catch(() => toast("엑셀 파일을 만들지 못했습니다. 인터넷 연결을 확인해 주세요."));
+}
+
 function uploadForm() {
   if (!requireName()) return;
   openModal(`<div class="form" id="upForm">
@@ -1012,6 +1044,7 @@ function wireEvents() {
     if ((el = t.closest("[data-add-personal]"))) { personalForm(null, el.dataset.addPersonal || S.sel); return; }
     if (t.closest("#pLockBtn")) { unlockForm(); return; }
     if (t.closest("#uploadBtn")) { uploadForm(); return; }
+    if (t.closest("#downloadBtn")) { downloadMonth(); return; }
     if ((el = t.closest("[data-dept]"))) {
       const d = el.dataset.dept;
       S.dept = S.dept === d && d !== "all" ? "all" : d;
