@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="stylesheet" href="style.css?v=14">
 </head>
 <body class="locked">
   <div id="lock" class="lock">
@@ -44,12 +44,12 @@
   <main class="wrap">
     <div class="action-bar">
       <button class="btn primary" data-add-task="">+ 업무 추가</button>
-      <button class="btn me" data-add-personal="">👤 개인 일정</button>
+      <button class="btn me" data-add-personal="">📝 개인 업무 기록</button>
       <button class="btn vac" data-add-vac="">🌴 휴가 등록</button>
       <button class="btn" data-add-note="">📢 공지 등록</button>
       <button class="btn" id="uploadBtn">📤 엑셀 업로드</button>
       <button class="btn" id="downloadBtn">📥 엑셀 다운로드</button>
-      <button class="btn lock-btn" id="pLockBtn">🔒 내 비공개 일정 열기</button>
+      <button class="btn lock-btn" id="pLockBtn">🔒 내 비공개 기록 열기</button>
     </div>
 
     <section class="summary" id="summary"></section>
@@ -57,7 +57,6 @@
     <div class="toolbar">
       <div class="chips" id="deptFilters"></div>
       <div class="toolbar-right">
-        <label class="switch"><input type="checkbox" id="showPersonal"><span>개인 일정</span></label>
         <label class="switch"><input type="checkbox" id="showVac"><span>휴가 보기</span></label>
         <label class="switch"><input type="checkbox" id="hideDone"><span>완료 숨기기</span></label>
         <div class="seg" role="tablist">
@@ -72,7 +71,11 @@
         <div class="cal-head" id="calHead"></div>
         <div class="cal-grid" id="calGrid"></div>
       </section>
-      <aside class="day-panel" id="dayPanel"></aside>
+      <aside class="side">
+        <section class="day-panel" id="dayPanel"></section>
+        <section class="side-card" id="peoplePanel"></section>
+        <section class="side-card" id="allPanel"></section>
+      </aside>
     </div>
 
     <section class="list-view" id="listView" hidden></section>
@@ -83,8 +86,8 @@
   <div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true"></div></div>
   <div id="toast" class="toast" role="status"></div>
 
-  <script src="firebase-config.js?v=13"></script>
-  <script src="lock.js?v=13"></script>
-  <script src="app.js?v=13"></script>
+  <script src="firebase-config.js?v=14"></script>
+  <script src="lock.js?v=14"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

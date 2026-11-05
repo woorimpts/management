@@ -2,7 +2,9 @@
 /*  부서 업무 달력
  *  - 업무·휴가·체크 기록은 Firestore 에 저장되며, 모두 사이트 비밀번호로 암호화(AES-GCM)됩니다.
  *  - Firestore 컬렉션
- *      items  : { kind: task|vacation|note, months: ["2026-11"], iv, ct, at }
+ *      items  : { kind: task|vacation|note|personal, months: ["2026-11"], iv, ct, at }
+ *               { kind: member,  months: ["member"]  } 직원 이름 목록
+ *               { kind: profile, months: ["profile"] } 개인 비밀번호 확인값
  *      checks : { months, item, iv, ct, at }   (문서 ID = 업무 ID)
  */
 
@@ -126,7 +128,11 @@ const S = {
   dept: store("dept") || "all",
   hideDone: store("hideDone") === "1",
   showVac: store("showVac") !== "0",
-  showPersonal: store("showPersonal") !== "0",
+  allPersonal: null, // 전체 기간 개인 업무 기록 (null = 아직 못 불러옴 → 이번 달 것만 사용)
+  members: [],
+  hidePeople: new Set((store("hidePeople") || "").split("|").filter(Boolean)),
+  allRange: store("allRange") || "month",
+  allOpen: store("allOpen") === "1",
   view: store("view") || "calendar",
   sel: TODAY,
 };
@@ -183,6 +189,22 @@ function subscribe(month) {
     gotChecks = true; done();
   }, onErr));
 }
+// 달과 상관없는 구독: 직원 목록, 전체 개인 업무 기록
+let personalDocs = [];
+function subscribeGlobal() {
+  db.collection("items").where("months", "array-contains", "member").onSnapshot(async (snap) => {
+    S.members = (await readDocs(snap.docs)).filter((x) => x.kind === "member" && x.name);
+    render();
+  }, (e) => console.error(e));
+  db.collection("items").where("kind", "==", "personal").onSnapshot(async (snap) => {
+    personalDocs = snap.docs;
+    await processPersonal(); render();
+  }, (e) => { console.error(e); S.allPersonal = null; render(); });
+}
+const byStart = (a, b) => (a.start || "").localeCompare(b.start || "") || (a.title || "").localeCompare(b.title || "");
+async function processPersonal() {
+  S.allPersonal = (await readDocs(personalDocs)).filter((x) => x.kind === "personal").sort(byStart);
+}
 async function processItems(month) {
   const list = await readDocs(S.itemDocs);
   if (S.month !== month) return;
@@ -190,7 +212,7 @@ async function processItems(month) {
   S.vacs = list.filter((x) => x.kind === "vacation").sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.name || "").localeCompare(b.name || ""));
   // 직접 등록한 공지가 위, 엑셀 공지는 엑셀 순서대로
   S.notes = list.filter((x) => x.kind === "note").sort((a, b) => (a.src === "excel") - (b.src === "excel") || (a.ord ?? 0) - (b.ord ?? 0) || (a.start || "").localeCompare(b.start || ""));
-  S.personal = list.filter((x) => x.kind === "personal").sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.title || "").localeCompare(b.title || ""));
+  S.personal = list.filter((x) => x.kind === "personal").sort(byStart);
 }
 function taskOrder(a, b) {
   return (a.batch || "~").localeCompare(b.batch || "~") || (a.ord ?? 1e9) - (b.ord ?? 1e9) ||
@@ -238,13 +260,14 @@ async function unlockPersonal(name, pw, remember) {
   }
   P.key = key; P.name = name; P.ver++;
   store("pPw:" + name, remember ? pw : null);
-  await processItems(S.month); render();
+  await processItems(S.month); await processPersonal(); render();
   return "ok";
 }
 function lockPersonal() {
   if (P.name) store("pPw:" + P.name, null);
   P.key = null; P.name = ""; P.ver++;
   S.personal = S.personal.filter((x) => !x.private);
+  if (S.allPersonal) S.allPersonal = S.allPersonal.filter((x) => !x.private);
   render();
 }
 async function hasProfile(name) { try { return (await loadProfiles(name)).length > 0; } catch (e) { return false; } }
@@ -307,10 +330,48 @@ function dayEntries(date) {
   return entries().filter((e) => e.start <= date && date <= e.end && deptOk(e.task.dept) && !(S.hideDone && isDone(e.id)));
 }
 const isMine = (p) => p.name && p.name === userName();
+// ── 개인별 업무 기록: 사람 목록 / 색 / 표시 여부 ──
+const personOn = (name) => !S.hidePeople.has(name);
+// 사람 색: 이름별로 정해진 자리에서 시작해 아직 안 쓴 색을 배정 (8명까지는 겹치지 않음, 누가 보든 같은 색)
+let personColors = new Map(), colorKey = "";
+function personColor(name) {
+  // 보는 사람의 이름은 빼고 계산해야 누가 보든 색이 같음
+  const names = [...new Set([...S.members.map((m) => m.name), ...allPersonal().map((r) => r.name), name].filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));
+  const key = names.join("|");
+  if (key !== colorKey) {
+    colorKey = key; personColors = new Map();
+    const used = new Set();
+    names.forEach((n) => {
+      let h = 0;
+      for (const c of n) h = (h * 31 + c.codePointAt(0)) >>> 0;
+      let i = h % 8;
+      for (let k = 0; k < 8 && used.has(i); k++) i = (i + 1) % 8;
+      used.add(i); if (used.size >= 8) used.clear();
+      personColors.set(n, `var(--d${i})`);
+    });
+  }
+  return personColors.get(name) || "var(--d-none)";
+}
+const initial = (name) => String(name).trim().slice(-2);
+const allPersonal = () => S.allPersonal || S.personal;
+function people() {
+  const map = new Map();
+  const add = (name, dept, member) => {
+    if (!name) return;
+    const p = map.get(name) || { name, dept: "", member: null };
+    if (dept && !p.dept) p.dept = dept;
+    if (member) p.member = member;
+    map.set(name, p);
+  };
+  S.members.forEach((m) => add(m.name, m.dept, m));
+  allPersonal().forEach((r) => add(r.name, r.dept));
+  add(userName(), store("myDept") || "");
+  const me = userName();
+  return [...map.values()].sort((a, b) => (b.name === me) - (a.name === me) || a.name.localeCompare(b.name, "ko"));
+}
+function savePeopleFilter() { store("hidePeople", [...S.hidePeople].join("|")); }
 function dayPersonal(date) {
-  if (!S.showPersonal) return [];
-  return S.personal.filter((p) => p.start <= date && date <= (p.end || p.start) &&
-    (S.dept === "all" || !p.dept || p.dept === S.dept || isMine(p)) && !(S.hideDone && p.done));
+  return S.personal.filter((p) => p.start <= date && date <= (p.end || p.start) && personOn(p.name) && !(S.hideDone && p.done));
 }
 function dayVacs(date) {
   if (!S.showVac) return [];
@@ -325,16 +386,15 @@ function render() {
   $("#monthLabel").textContent = `${y}년 ${m}월`;
   $("#hideDone").checked = S.hideDone;
   $("#showVac").checked = S.showVac;
-  $("#showPersonal").checked = S.showPersonal;
   const lb = $("#pLockBtn");
-  lb.textContent = P.key ? `🔓 ${P.name} 비공개 열림` : "🔒 내 비공개 일정 열기";
+  lb.textContent = P.key ? `🔓 ${P.name} 비공개 열림` : "🔒 내 비공개 기록 열기";
   lb.classList.toggle("on", !!P.key);
   $$(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.view === S.view));
   $("#calendarView").hidden = S.view !== "calendar";
   $("#listView").hidden = S.view !== "list";
   renderSummary();
   renderFilters();
-  if (S.view === "calendar") { renderCalendar(); renderPanel(); } else renderList();
+  if (S.view === "calendar") { renderCalendar(); renderPanel(); renderPeople(); renderAllPersonal(); } else renderList();
   renderExtra();
 }
 
@@ -360,7 +420,7 @@ function renderSummary() {
     const mine = S.personal.filter(isMine);
     const md2 = mine.filter((p) => p.done).length;
     const pct = mine.length ? Math.round((md2 / mine.length) * 100) : 0;
-    html += `<button class="stat me-stat" data-add-personal="" style="--c:var(--me)" title="눌러서 개인 일정 추가"><div class="name">👤 내 일정</div>
+    html += `<button class="stat me-stat" data-add-personal="" style="--c:var(--me)" title="눌러서 개인 업무 기록 추가"><div class="name">📝 내 기록</div>
       <div class="num">${mine.length ? pct + "%" : "–"}<small>${md2}/${mine.length}</small></div>
       <div class="bar"><span style="width:${pct}%"></span></div>
       <div class="late muted">${mine.filter((p) => p.private).length ? `🔒${mine.filter((p) => p.private).length}` : ""}</div></button>`;
@@ -398,11 +458,12 @@ function renderCalendar() {
     const count = list.length ? `<span class="dcount ${countCls}">${doneN}/${list.length}</span>` : "";
     const vacHtml = vacs.length ? `<div class="vac-line" title="${esc(vacs.map(vacLabel).join(", "))}">🌴 ${esc(vacs.slice(0, 3).map(vacLabel).join(", "))}${vacs.length > 3 ? ` 외 ${vacs.length - 3}` : ""}</div>` : "";
     const pers = dayPersonal(ds).sort((a, b) => isMine(b) - isMine(a));
-    let budget = vacs.length ? 3 : 4;
-    const pShow = pers.slice(0, Math.min(pers.length, 2));
-    budget = Math.max(1, budget - pShow.length);
-    const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""}" title="${esc(p.name + " · " + p.title)}">
-        <input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${isMine(p) ? "" : "disabled"}><span>${p.private ? "🔒" : "👤"}${esc(isMine(p) ? "" : p.name + " ")}${esc(p.title)}</span></label>`).join("");
+    const total = vacs.length ? 3 : 4;
+    // 부서 업무 먼저, 개인 기록은 최소 1칸
+    const budget = Math.min(list.length, pers.length ? total - 1 : total);
+    const pShow = pers.slice(0, Math.max(1, total - budget));
+    const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""}" style="--c:${personColor(p.name)}" title="${esc(p.name + " · " + p.title)}">
+        <input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${isMine(p) ? "" : "disabled"}><i class="av-s">${esc(initial(p.name).slice(-1))}</i><span>${p.private ? "🔒" : ""}${esc(p.title)}</span></label>`).join("");
     const chips = list.slice(0, budget).map((e) => {
       const done = isDone(e.id);
       return `<label class="task-chip ${done ? "done" : ""} ${isLate(e) ? "late" : ""}" style="--c:${color(e.task.dept)}" title="${esc(e.task.dept + " · " + (e.sub ? stripNum(e.task.title) + " › " : "") + e.title)}">
@@ -410,8 +471,8 @@ function renderCalendar() {
     }).join("");
     const hidden = list.length - Math.min(list.length, budget) + (pers.length - pShow.length);
     const more = hidden > 0 ? `<div class="more">+${hidden}건 더보기</div>` : "";
-    const dots = `<div class="dots">${vacs.length ? '<i class="vac"></i>' : ""}${pers.length ? '<i class="me"></i>' : ""}${list.slice(0, 7).map((e) => `<i style="--c:${color(e.task.dept)}" class="${isDone(e.id) ? "done" : ""}"></i>`).join("")}</div>`;
-    html += `<div class="${cls}" data-date="${ds}"><div class="dhead"><span class="dnum">${d.getDate()}</span>${count}</div>${vacHtml}${pChips}${chips}${more}${dots}</div>`;
+    const dots = `<div class="dots">${vacs.length ? '<i class="vac"></i>' : ""}${pers.slice(0, 3).map((p) => `<i class="me" style="--c:${personColor(p.name)}"></i>`).join("")}${list.slice(0, 7).map((e) => `<i style="--c:${color(e.task.dept)}" class="${isDone(e.id) ? "done" : ""}"></i>`).join("")}</div>`;
+    html += `<div class="${cls}" data-date="${ds}"><div class="dhead"><span class="dnum">${d.getDate()}</span>${count}</div>${vacHtml}${chips}${pChips}${more}${dots}</div>`;
   }
   $("#calGrid").innerHTML = html;
 }
@@ -467,11 +528,11 @@ function vacCard(v) {
 
 function personalCard(p) {
   const mine = isMine(p);
-  return `<div class="task pcard ${p.done ? "done" : ""} ${mine ? "mine" : ""}">
+  return `<div class="task pcard ${p.done ? "done" : ""} ${mine ? "mine" : ""}" style="--c:${personColor(p.name)}">
     ${mine ? `<button class="edit-btn" data-edit-personal="${esc(p.id)}" title="수정/삭제" aria-label="수정">✎</button>` : ""}
     <label class="task-row"><input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${mine ? "" : "disabled"}>
       <div><div class="task-title">${esc(p.title)}</div>
-      <div class="meta"><span class="pname">${p.private ? "🔒 비공개 · " : "👤 "}${esc(p.name)}</span><span>📅 ${period(p.start, p.end)}</span>${p.memo ? `<span>${esc(p.memo)}</span>` : ""}${p.done && p.doneAt ? `<span class="by">✓ 완료</span>` : ""}</div></div></label></div>`;
+      <div class="meta"><span class="pname">${p.private ? "🔒 비공개 · " : ""}${esc(p.name)}</span><span>📅 ${period(p.start, p.end)}</span>${p.memo ? `<span>${esc(p.memo)}</span>` : ""}${p.done && p.doneAt ? `<span class="by">✓ 완료</span>` : ""}</div></div></label></div>`;
 }
 
 function renderPanel() {
@@ -483,14 +544,75 @@ function renderPanel() {
   const [, m, day] = d.split("-");
   $("#dayPanel").innerHTML = `<div class="panel-head">
       <div><h2>${+m}월 ${+day}일 (${WEEK[dow(d)]})${d === TODAY ? " · 오늘" : ""}</h2>
-      <p>${list.length ? `업무 ${list.length}건 · 완료 ${doneN}건` : "업무 없음"}${vacs.length ? ` · 휴가 ${vacs.length}명` : ""}${pers.length ? ` · 개인 ${pers.length}건` : ""}</p></div>
-      <div class="panel-actions"><button class="small-btn" data-add-task="${d}">+ 업무</button><button class="small-btn me" data-add-personal="${d}">+ 개인</button><button class="small-btn vac" data-add-vac="${d}">+ 휴가</button></div></div>
+      <p>${list.length ? `업무 ${list.length}건 · 완료 ${doneN}건` : "업무 없음"}${vacs.length ? ` · 휴가 ${vacs.length}명` : ""}${pers.length ? ` · 개인 기록 ${pers.length}건` : ""}</p></div>
+      <div class="panel-actions"><button class="small-btn" data-add-task="${d}">+ 업무</button><button class="small-btn me" data-add-personal="${d}">+ 개인기록</button><button class="small-btn vac" data-add-vac="${d}">+ 휴가</button></div></div>
     <div class="panel-body">
       ${vacs.length ? `<div class="sec-title">휴가</div>${vacs.map(vacCard).join("")}` : ""}
-      ${pers.length ? `<div class="sec-title">개인 일정</div>${pers.map(personalCard).join("")}` : ""}
       ${vacs.length || pers.length ? `<div class="sec-title">부서 업무</div>` : ""}
       ${!S.loaded ? '<div class="empty">불러오는 중…</div>' : list.length ? list.map((e) => (e.sub ? subCard(e) : taskCard(e.task))).join("") : '<div class="empty">이 날 마감인 업무가 없습니다.<br>위의 <b>+ 업무</b>로 추가할 수 있습니다.</div>'}
+      ${pers.length ? `<div class="sec-title">개인 업무 기록</div>${pers.map(personalCard).join("")}` : ""}
     </div>`;
+}
+
+// ───────── 개인별 업무 기록 (사람 목록) ─────────
+function renderPeople() {
+  const list = people(), me = userName(), recs = allPersonal();
+  const rows = list.map((p) => {
+    const mine = recs.filter((r) => r.name === p.name);
+    const done = mine.filter((r) => r.done).length;
+    const canDel = p.member && !mine.length && p.name !== me;
+    return `<div class="person ${p.name === me ? "me" : ""}" style="--c:${personColor(p.name)}">
+      <label><input type="checkbox" data-person="${esc(p.name)}" ${personOn(p.name) ? "checked" : ""}>
+        <span class="av">${esc(initial(p.name))}</span>
+        <span class="nm">${esc(p.name)}${p.dept ? `<small>${esc(p.dept)}</small>` : ""}</span></label>
+      <span class="cnt" title="완료 / 전체">${done}/${mine.length}</span>
+      ${p.name === me ? `<button class="small-btn me" data-add-personal="" title="내 업무 기록 추가">+</button>`
+        : canDel ? `<button class="edit-btn" data-del-member="${esc(p.member.id)}" title="목록에서 빼기" aria-label="목록에서 빼기">✕</button>` : ""}
+    </div>`;
+  }).join("");
+  // 다른 사람 변경으로 다시 그려져도 입력 중이던 새 이름은 유지
+  const oldInput = $("#memberForm input"), typed = oldInput ? oldInput.value : "", focused = oldInput && document.activeElement === oldInput;
+  $("#peoplePanel").innerHTML = `<div class="panel-head"><div><h2>👥 개인별 업무 기록</h2><p>체크한 사람의 기록이 달력에 함께 표시됩니다</p></div></div>
+    <div class="quick"><button data-people="all">모두 보기</button>·<button data-people="none">모두 끄기</button>·<button data-people="me">나만 보기</button></div>
+    <div class="people-list">${rows || '<div class="empty">아직 등록된 사람이 없습니다.</div>'}</div>
+    <form class="people-foot" id="memberForm" autocomplete="off"><input name="name" placeholder="새 이름 추가 (예: 홍길동)" maxlength="20" aria-label="새 이름"><button class="small-btn">+ 추가</button></form>`;
+  const ni = $("#memberForm input");
+  ni.value = typed;
+  if (focused) ni.focus();
+}
+
+function weekRange(date) {
+  const d = new Date(date + "T00:00"), s = new Date(d); s.setDate(d.getDate() - d.getDay());
+  const e = new Date(s); e.setDate(s.getDate() + 6);
+  return [iso(s), iso(e)];
+}
+function renderAllPersonal() {
+  const range = S.allRange;
+  let from = "", to = "9999";
+  if (range === "month") { from = S.month + "-01"; to = S.month + "-31"; }
+  else if (range === "week") [from, to] = weekRange(TODAY);
+  const on = people().filter((p) => personOn(p.name));
+  const recs = allPersonal().filter((r) => r.start <= to && (r.end || r.start) >= from);
+  let total = 0, doneT = 0;
+  const groups = on.map((p) => {
+    const mine = recs.filter((r) => r.name === p.name);
+    const done = mine.filter((r) => r.done).length; total += mine.length; doneT += done;
+    const rows = mine.filter((r) => !(S.allOpen && r.done)).map((r) => {
+      const end = r.end || r.start;
+      const cls = [r.done && "done", !r.done && end < TODAY && "late", r.start <= TODAY && TODAY <= end && "today"].filter(Boolean).join(" ");
+      return `<div class="all-row ${cls}">
+        <input type="checkbox" data-pcheck="${esc(r.id)}" ${r.done ? "checked" : ""} ${isMine(r) ? "" : "disabled"} aria-label="완료">
+        <button class="all-go" data-go="${esc(r.start)}" title="${esc(r.title)}${r.memo ? " — " + esc(r.memo) : ""}"><span class="dt">${end !== r.start ? `${md(r.start)}~${md(end)}` : mdw(r.start)}</span><span class="tt">${r.private ? "🔒 " : ""}${esc(r.title)}</span></button>
+      </div>`;
+    }).join("") || '<div class="all-none">표시할 기록 없음</div>';
+    return `<div class="all-group" style="--c:${personColor(p.name)}"><h4><span class="av">${esc(initial(p.name).slice(-1))}</span>${esc(p.name)}<small>완료 ${done}/${mine.length}</small></h4>${rows}</div>`;
+  }).join("");
+  const label = { month: `${+S.month.slice(5)}월`, week: "이번 주", all: "전체 기간" }[range];
+  $("#allPanel").innerHTML = `<div class="panel-head"><div><h2>📋 개인별 업무 전체 목록</h2>
+      <p>${label} · ${on.length}명 · ${total}건 중 ${doneT}건 완료${!S.allPersonal && range !== "month" ? " · (이번 달만 불러옴)" : ""}</p></div></div>
+    <div class="quick"><label class="switch"><input type="checkbox" id="allOpen" ${S.allOpen ? "checked" : ""}><span>미완료만</span></label>
+      <select id="allRange" aria-label="기간">${[["month", "보고 있는 달"], ["week", "이번 주"], ["all", "전체 기간"]].map(([v, t]) => `<option value="${v}" ${v === range ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+    <div class="all-list">${on.length ? groups : '<div class="empty">위 목록에서 사람을 체크하세요.</div>'}</div>`;
 }
 
 function renderList() {
@@ -506,10 +628,8 @@ function renderList() {
   }).join("");
   const vacs = S.showVac ? S.vacs.filter((v) => S.dept === "all" || !v.dept || v.dept === S.dept) : [];
   if (vacs.length) html += `<section class="group"><h3>🌴 이번 달 휴가<small>${vacs.length}건</small></h3><div class="body">${vacs.map(vacCard).join("")}</div></section>`;
-  if (S.showPersonal) {
-    const pers = S.personal.filter((p) => !(S.hideDone && p.done)).sort((a, b) => isMine(b) - isMine(a) || (a.start || "").localeCompare(b.start || ""));
-    if (pers.length) html = `<section class="group me-group"><h3>👤 개인 일정<small>${pers.length}건</small></h3><div class="body">${pers.map(personalCard).join("")}</div></section>` + html;
-  }
+  const pers = S.personal.filter((p) => personOn(p.name) && !(S.hideDone && p.done)).sort((a, b) => isMine(b) - isMine(a) || (a.start || "").localeCompare(b.start || ""));
+  if (pers.length) html += `<section class="group me-group"><h3>📝 개인 업무 기록<small>${pers.length}건</small></h3><div class="body">${pers.map(personalCard).join("")}</div></section>`;
   if (!html) html = `<div class="empty big">${S.loaded ? "이 달에 등록된 업무가 없습니다. <b>엑셀 업로드</b> 또는 <b>+ 업무 추가</b>로 시작하세요." : "불러오는 중…"}</div>`;
   $("#listView").innerHTML = html;
 }
@@ -748,7 +868,7 @@ function noteForm(note) {
 function pwFields(exists) {
   return exists
     ? `<label>개인 비밀번호<input type="password" name="ppw" autocomplete="off" required></label>`
-    : `<p class="hint">처음 사용하는 이름입니다. <b>개인 비밀번호</b>를 정해 주세요. 잊어버리면 비공개 일정을 다시 볼 수 없습니다.</p>
+    : `<p class="hint">처음 사용하는 이름입니다. <b>개인 비밀번호</b>를 정해 주세요. 잊어버리면 비공개 기록을 다시 볼 수 없습니다.</p>
        <div class="row2"><label>개인 비밀번호 (4자 이상)<input type="password" name="ppw" minlength="4" autocomplete="new-password" required></label>
        <label>한 번 더 입력<input type="password" name="ppw2" minlength="4" autocomplete="new-password" required></label></div>`;
 }
@@ -762,12 +882,12 @@ async function tryUnlockFromForm(f) {
 
 async function unlockForm() {
   if (!requireName()) return;
-  if (P.key) { lockPersonal(); toast("비공개 일정을 잠갔습니다."); return; }
+  if (P.key) { lockPersonal(); toast("비공개 기록을 잠갔습니다."); return; }
   const name = userName();
   const exists = await hasProfile(name);
   openModal(`<form class="form" id="pUnlock">
-    <h2>🔒 ${esc(name)}님의 비공개 일정</h2>
-    <p class="hint">개인 비밀번호로 잠긴 일정은 본인만 볼 수 있습니다. 사이트 관리자도 내용을 볼 수 없습니다.</p>
+    <h2>🔒 ${esc(name)}님의 비공개 기록</h2>
+    <p class="hint">개인 비밀번호로 잠긴 기록은 본인만 볼 수 있습니다. 사이트 관리자도 내용을 볼 수 없습니다.</p>
     ${pwFields(exists)}
     <label class="switch"><input type="checkbox" name="premember"><span>이 기기에서 기억하기 (공용 PC에서는 끄세요)</span></label>
     <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">${exists ? "열기" : "비밀번호 정하고 열기"}</button></div>
@@ -775,7 +895,7 @@ async function unlockForm() {
     const f = $("#pUnlock", card);
     f.onsubmit = async (ev) => {
       ev.preventDefault(); busy(f, true);
-      try { if (await tryUnlockFromForm(f)) { closeModal(); toast("비공개 일정이 열렸습니다."); } }
+      try { if (await tryUnlockFromForm(f)) { closeModal(); toast("비공개 기록이 열렸습니다."); } }
       catch (e) { console.error(e); toast("확인하지 못했습니다."); }
       busy(f, false);
     };
@@ -784,13 +904,13 @@ async function unlockForm() {
 
 async function personalForm(item, date) {
   if (!requireName()) return;
-  if (item && !isMine(item)) { toast("본인 일정만 수정할 수 있습니다."); return; }
+  if (item && !isMine(item)) { toast("본인 기록만 수정할 수 있습니다."); return; }
   const p = item || { title: "", start: date || S.sel, end: "", memo: "", private: false };
   const needPw = !P.key;
   const exists = needPw ? await hasProfile(userName()) : true;
   openModal(`<form class="form" id="pForm">
-    <h2>${item ? "개인 일정 수정" : "👤 개인 일정 추가"} <small class="muted">· ${esc(userName())}</small></h2>
-    <label>할 일 *<textarea name="title" rows="2" required maxlength="300">${esc(p.title)}</textarea></label>
+    <h2>${item ? "개인 업무 기록 수정" : "📝 개인 업무 기록"} <small class="muted">· ${esc(userName())}</small></h2>
+    <label>업무 내용 *<textarea name="title" rows="2" required maxlength="300">${esc(p.title)}</textarea></label>
     <div class="row2">
       <label>날짜(시작) *<input type="date" name="start" value="${esc(p.start || "")}" required></label>
       <label>종료일 <small>(하루면 비워두기)</small><input type="date" name="end" value="${esc(p.end && p.end !== p.start ? p.end : "")}"></label>
@@ -799,7 +919,7 @@ async function personalForm(item, date) {
     <label class="switch priv-switch"><input type="checkbox" name="priv" ${p.private ? "checked" : ""}><span>🔒 <b>나만 보기</b> — 개인 비밀번호로 잠가서 다른 사람에게 보이지 않게 합니다</span></label>
     <div id="pPwBox" hidden>${needPw ? pwFields(exists) + `<label class="switch"><input type="checkbox" name="premember"><span>이 기기에서 개인 비밀번호 기억하기</span></label>` : ""}</div>
     <div class="form-actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary" type="submit">저장</button></div>
-    ${item ? deleteRow("일정") : ""}
+    ${item ? deleteRow("기록") : ""}
   </form>`, (card) => {
     const f = $("#pForm", card);
     const box = $("#pPwBox", card);
@@ -821,24 +941,41 @@ async function personalForm(item, date) {
         const data = { ...(item || {}), name: userName(), dept: (item && item.dept) || store("myDept") || "", title, start: v.start, end: v.end || v.start,
           memo: v.memo.trim(), done: item ? !!item.done : false, private: f.priv.checked };
         await savePersonal(data, item && item.id);
-        closeModal(); toast(item ? "일정을 수정했습니다." : f.priv.checked ? "🔒 비공개 일정을 추가했습니다." : "개인 일정을 추가했습니다.");
+        closeModal(); toast(item ? "기록을 수정했습니다." : f.priv.checked ? "🔒 비공개 기록을 추가했습니다." : "개인 업무 기록을 추가했습니다.");
         if (!item && !v.start.startsWith(S.month)) setMonth(v.start.slice(0, 7), v.start);
       } catch (e) { console.error(e); toast("저장하지 못했습니다."); busy(f, false); }
     };
     if (item) wireDelete(card, async () => {
-      try { await deleteItem(item.id); closeModal(); toast("일정을 삭제했습니다."); } catch (e) { console.error(e); toast("삭제하지 못했습니다."); }
+      try { await deleteItem(item.id); closeModal(); toast("기록을 삭제했습니다."); } catch (e) { console.error(e); toast("삭제하지 못했습니다."); }
     });
   });
 }
 
 async function togglePersonal(id, done) {
-  const p = S.personal.find((x) => x.id === id);
+  const copies = [S.personal, S.allPersonal || []].map((l) => l.find((x) => x.id === id)).filter(Boolean);
+  const p = copies[0];
   if (!p) return;
-  if (!isMine(p)) { toast("본인 일정만 체크할 수 있습니다."); render(); return; }
+  if (!isMine(p)) { toast("본인 기록만 체크할 수 있습니다."); render(); return; }
   const prev = p.done;
-  p.done = done; p.doneAt = done ? Date.now() : null; render();
+  const set = (v) => copies.forEach((c) => { c.done = v; c.doneAt = v ? Date.now() : null; });
+  set(done); render();
   try { await savePersonal(p, p.id); }
-  catch (e) { console.error(e); p.done = prev; render(); toast("저장하지 못했습니다."); }
+  catch (e) { console.error(e); set(prev); render(); toast("저장하지 못했습니다."); }
+}
+
+async function addMember(form) {
+  const name = form.name.value.trim();
+  if (!name) return;
+  if (!requireName()) return;
+  if (people().some((p) => p.name === name)) { toast(`${name}님은 이미 목록에 있습니다.`); form.name.select(); return; }
+  busy(form, true);
+  try {
+    await saveItem("member", { name, by: userName(), months: ["member"] });
+    S.hidePeople.delete(name); savePeopleFilter();
+    form.name.value = "";
+    toast(`${name}님을 추가했습니다.`);
+  } catch (e) { console.error(e); toast("추가하지 못했습니다."); }
+  busy(form, false);
 }
 
 function busy(form, on) { $$("button", form).forEach((b) => (b.disabled = on)); }
@@ -1126,6 +1263,10 @@ function wireEvents() {
   });
 
   document.addEventListener("change", async (ev) => {
+    const pe = ev.target.closest("input[data-person]");
+    if (pe) { const n = pe.dataset.person; pe.checked ? S.hidePeople.delete(n) : S.hidePeople.add(n); savePeopleFilter(); render(); return; }
+    if (ev.target.id === "allOpen") { S.allOpen = ev.target.checked; store("allOpen", S.allOpen ? "1" : "0"); render(); return; }
+    if (ev.target.id === "allRange") { S.allRange = ev.target.value; store("allRange", S.allRange); render(); return; }
     const pc = ev.target.closest("input[data-pcheck]");
     if (pc) { if (!requireName()) { pc.checked = !pc.checked; return; } togglePersonal(pc.dataset.pcheck, pc.checked); return; }
     const cb = ev.target.closest("input[data-check]");
@@ -1155,6 +1296,21 @@ function wireEvents() {
     if ((el = t.closest("[data-edit-personal]"))) { ev.preventDefault(); personalForm(S.personal.find((x) => x.id === el.dataset.editPersonal)); return; }
     if ((el = t.closest("[data-add-personal]"))) { personalForm(null, el.dataset.addPersonal || S.sel); return; }
     if (t.closest("#pLockBtn")) { unlockForm(); return; }
+    if ((el = t.closest("[data-people]"))) {
+      const mode = el.dataset.people, me = userName();
+      S.hidePeople = new Set(mode === "all" ? [] : people().map((p) => p.name).filter((n) => mode === "none" || n !== me));
+      savePeopleFilter(); render(); return;
+    }
+    if ((el = t.closest("[data-del-member]"))) {
+      deleteItem(el.dataset.delMember).then(() => toast("목록에서 뺐습니다.")).catch((e) => { console.error(e); toast("삭제하지 못했습니다."); });
+      return;
+    }
+    if ((el = t.closest("[data-go]"))) {
+      const d = el.dataset.go;
+      if (d.slice(0, 7) !== S.month) setMonth(d.slice(0, 7), d); else { S.sel = d; render(); }
+      $("#dayPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
     if (t.closest("#uploadBtn")) { uploadForm(); return; }
     if (t.closest("#downloadBtn")) { downloadMonth(); return; }
     if ((el = t.closest("[data-dept]"))) {
@@ -1171,10 +1327,10 @@ function wireEvents() {
     }
   });
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#modal").hidden) closeModal(); });
+  document.addEventListener("submit", (ev) => { if (ev.target.id === "memberForm") { ev.preventDefault(); addMember(ev.target); } });
 
   $("#hideDone").addEventListener("change", (e) => { S.hideDone = e.target.checked; store("hideDone", S.hideDone ? "1" : "0"); render(); });
   $("#showVac").addEventListener("change", (e) => { S.showVac = e.target.checked; store("showVac", S.showVac ? "1" : "0"); render(); });
-  $("#showPersonal").addEventListener("change", (e) => { S.showPersonal = e.target.checked; store("showPersonal", S.showPersonal ? "1" : "0"); render(); });
   $("#prevMonth").addEventListener("click", () => shiftMonth(-1));
   $("#nextMonth").addEventListener("click", () => shiftMonth(1));
   $("#todayBtn").addEventListener("click", () => setMonth(TODAY.slice(0, 7), TODAY));
@@ -1196,6 +1352,7 @@ async function boot() {
     return;
   }
   setMonth(S.month, S.sel);
+  subscribeGlobal();
   autoUnlock();
 }
 
