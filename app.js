@@ -1369,15 +1369,14 @@ function renderChat() {
   const me = userName();
   const all = [...CH.older, ...CH.now].sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const olderLabel = CH.olderFrom ? `${+prevYM(CH.olderFrom).slice(5)}월 대화 보기` : "이전 달 대화 보기";
-  let html = `<button class="chat-more" data-chat-older>${olderLabel}</button>`, lastDay = "", lastName = "";
+  let html = `<button class="chat-more" data-chat-older>${olderLabel}</button>`, lastDay = "";
   all.forEach((m) => {
     const d = new Date(m.ts), day = `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEK[d.getDay()]})`;
-    if (day !== lastDay) { html += `<div class="chat-day">${day}</div>`; lastDay = day; lastName = ""; }
+    if (day !== lastDay) { html += `<div class="chat-day">${day}</div>`; lastDay = day; }
     const mine = !!me && m.name === me;
-    const showName = !mine && m.name !== lastName;
-    lastName = m.name;
+    // 보낸 사람 이름은 모든 메시지에 표시 (내 메시지 포함)
     html += `<div class="msg ${mine ? "mine" : ""}" style="--c:${personColor(m.name)}">
-      ${showName ? `<div class="msg-name"><span class="av">${esc(initial(m.name))}</span>${esc(m.name)}</div>` : ""}
+      <div class="msg-name"><span class="av">${esc(initial(m.name))}</span>${esc(m.name)}${mine ? ' <small class="msg-me">(나)</small>' : ""}</div>
       <div class="msg-row"><div class="bubble">${esc(m.text)}</div><span class="msg-time">${hm(m.ts)}</span>${mine ? `<button class="msg-del" data-chat-del="${esc(m.id)}" title="삭제" aria-label="메시지 삭제">✕</button>` : ""}</div></div>`;
   });
   if (!all.length) html += '<div class="empty">아직 대화가 없습니다. 첫 메시지를 남겨 보세요.</div>';
