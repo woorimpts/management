@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body class="locked">
   <div id="lock" class="lock">
@@ -81,13 +81,22 @@
     <section class="list-view" id="listView" hidden></section>
 
     <section class="extra" id="extra"></section>
+
+    <section class="group chat-box" id="chat">
+      <h3>💬 팀 채팅<small id="chatInfo">이번 달 대화 · 내용은 암호화되어 저장됩니다</small></h3>
+      <div class="chat-list" id="chatList"><div class="empty">불러오는 중…</div></div>
+      <form class="chat-form" id="chatForm" autocomplete="off">
+        <textarea id="chatText" rows="1" maxlength="500" placeholder="메시지 입력 (Enter 보내기 · Shift+Enter 줄바꿈)" aria-label="메시지"></textarea>
+        <button class="btn primary" type="submit">보내기</button>
+      </form>
+    </section>
   </main>
 
   <div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true"></div></div>
   <div id="toast" class="toast" role="status"></div>
 
-  <script src="firebase-config.js?v=14"></script>
-  <script src="lock.js?v=14"></script>
-  <script src="app.js?v=14"></script>
+  <script src="firebase-config.js?v=15"></script>
+  <script src="lock.js?v=15"></script>
+  <script src="app.js?v=15"></script>
 </body>
 </html>

@@ -5,6 +5,7 @@
  *      items  : { kind: task|vacation|note|personal, months: ["2026-11"], iv, ct, at }
  *               { kind: member,  months: ["member"]  } 직원 이름 목록
  *               { kind: profile, months: ["profile"] } 개인 비밀번호 확인값
+ *               { kind: chat,    months: ["chat-2026-11"] } 팀 채팅 메시지 (보낸 달 기준)
  *      checks : { months, item, iv, ct, at }   (문서 ID = 업무 ID)
  */
 
@@ -1259,7 +1260,7 @@ function wireEvents() {
   nameInput.addEventListener("input", () => {
     store("userName", nameInput.value.trim()); $(".who").classList.remove("need");
     if (P.key && P.name !== userName()) lockPersonal(); // 이름이 바뀌면 개인 잠금 해제 상태 해제
-    clearTimeout(nameTimer); nameTimer = setTimeout(() => { autoUnlock(); render(); }, 600);
+    clearTimeout(nameTimer); nameTimer = setTimeout(() => { autoUnlock(); render(); renderChat(); }, 600);
   });
 
   document.addEventListener("change", async (ev) => {
@@ -1336,9 +1337,91 @@ function wireEvents() {
   $("#todayBtn").addEventListener("click", () => setMonth(TODAY.slice(0, 7), TODAY));
 }
 
+// ───────── 팀 채팅 ─────────
+// 메시지는 items 컬렉션에 kind: chat, months: ["chat-YYYY-MM"] 으로 암호화 저장. 이번 달은 실시간, 지난달은 버튼으로 불러옴
+const chatKey = (ym) => "chat-" + ym;
+const prevYM = (ym) => { let [y, m] = ym.split("-").map(Number); m--; if (m < 1) { m = 12; y--; } return `${y}-${pad(m)}`; };
+const CH = { now: [], older: [], olderFrom: null, loaded: false, stick: true };
+function subscribeChat() {
+  db.collection("items").where("months", "array-contains", chatKey(TODAY.slice(0, 7))).onSnapshot(async (snap) => {
+    CH.now = (await readDocs(snap.docs)).filter((x) => x.kind === "chat" && x.text);
+    CH.loaded = true; renderChat();
+  }, (e) => { console.error(e); $("#chatList").innerHTML = '<div class="empty">채팅을 불러오지 못했습니다. 새로고침 해주세요.</div>'; });
+}
+async function loadOlderChat(btn) {
+  const ym = prevYM(CH.olderFrom || TODAY.slice(0, 7));
+  btn.disabled = true; btn.textContent = "불러오는 중…";
+  try {
+    const snap = await db.collection("items").where("months", "array-contains", chatKey(ym)).get();
+    const list = (await readDocs(snap.docs)).filter((x) => x.kind === "chat" && x.text);
+    CH.older = [...list, ...CH.older]; CH.olderFrom = ym;
+    const box = $("#chatList"), h = box.scrollHeight;
+    CH.stick = false; renderChat();
+    box.scrollTop = box.scrollHeight - h; // 보던 위치 유지
+    if (!list.length) toast(`${+ym.slice(5)}월에는 대화가 없습니다.`);
+  } catch (e) { console.error(e); toast("이전 대화를 불러오지 못했습니다."); btn.disabled = false; btn.textContent = "이전 달 대화 보기"; }
+}
+const hm = (ts) => { const d = new Date(ts), h = d.getHours(); return `${h < 12 ? "오전" : "오후"} ${h % 12 || 12}:${pad(d.getMinutes())}`; };
+function renderChat() {
+  const box = $("#chatList");
+  if (!box || !CH.loaded) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  const me = userName();
+  const all = [...CH.older, ...CH.now].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const olderLabel = CH.olderFrom ? `${+prevYM(CH.olderFrom).slice(5)}월 대화 보기` : "이전 달 대화 보기";
+  let html = `<button class="chat-more" data-chat-older>${olderLabel}</button>`, lastDay = "", lastName = "";
+  all.forEach((m) => {
+    const d = new Date(m.ts), day = `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEK[d.getDay()]})`;
+    if (day !== lastDay) { html += `<div class="chat-day">${day}</div>`; lastDay = day; lastName = ""; }
+    const mine = !!me && m.name === me;
+    const showName = !mine && m.name !== lastName;
+    lastName = m.name;
+    html += `<div class="msg ${mine ? "mine" : ""}" style="--c:${personColor(m.name)}">
+      ${showName ? `<div class="msg-name"><span class="av">${esc(initial(m.name))}</span>${esc(m.name)}</div>` : ""}
+      <div class="msg-row"><div class="bubble">${esc(m.text)}</div><span class="msg-time">${hm(m.ts)}</span>${mine ? `<button class="msg-del" data-chat-del="${esc(m.id)}" title="삭제" aria-label="메시지 삭제">✕</button>` : ""}</div></div>`;
+  });
+  if (!all.length) html += '<div class="empty">아직 대화가 없습니다. 첫 메시지를 남겨 보세요.</div>';
+  box.innerHTML = html;
+  if (CH.stick || atBottom) box.scrollTop = box.scrollHeight;
+  CH.stick = false;
+}
+async function sendChat() {
+  const t = $("#chatText"), text = t.value.trim();
+  if (!text) return;
+  if (!requireName()) return;
+  if (!db) { toast("서버에 연결되지 않았습니다."); return; }
+  const form = $("#chatForm");
+  busy(form, true);
+  try {
+    await saveItem("chat", { name: userName(), text, ts: Date.now(), months: [chatKey(TODAY.slice(0, 7))] });
+    t.value = ""; t.style.height = ""; CH.stick = true; renderChat();
+  } catch (e) { console.error(e); toast("메시지를 보내지 못했습니다."); }
+  busy(form, false); t.focus();
+}
+function wireChat() {
+  const t = $("#chatText");
+  $("#chatForm").addEventListener("submit", (ev) => { ev.preventDefault(); sendChat(); });
+  t.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); sendChat(); } });
+  t.addEventListener("input", () => { t.style.height = ""; t.style.height = Math.min(t.scrollHeight + 2, 120) + "px"; });
+  $("#chatList").addEventListener("click", async (ev) => {
+    const older = ev.target.closest("[data-chat-older]");
+    if (older) { loadOlderChat(older); return; }
+    const del = ev.target.closest("[data-chat-del]");
+    if (!del) return;
+    if (!del.classList.contains("armed")) { // 한 번 더 눌러야 삭제
+      del.classList.add("armed"); del.textContent = "삭제";
+      setTimeout(() => { if (del.isConnected) { del.classList.remove("armed"); del.textContent = "✕"; } }, 3000);
+      return;
+    }
+    try { await deleteItem(del.dataset.chatDel); CH.older = CH.older.filter((m) => m.id !== del.dataset.chatDel); renderChat(); }
+    catch (e) { console.error(e); toast("삭제하지 못했습니다."); }
+  });
+}
+
 // ───────── 시작 ─────────
 async function boot() {
   wireEvents();
+  wireChat();
   render();
   try {
     if (!window.FIREBASE_CONFIG) throw new Error("no config");
@@ -1353,6 +1436,7 @@ async function boot() {
   }
   setMonth(S.month, S.sel);
   subscribeGlobal();
+  subscribeChat();
   autoUnlock();
 }
 
