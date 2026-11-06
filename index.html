@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=17">
+  <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body class="locked">
   <div id="lock" class="lock">
@@ -67,10 +67,13 @@
     </div>
 
     <div class="layout" id="calendarView">
-      <section class="cal">
-        <div class="cal-head" id="calHead"></div>
-        <div class="cal-grid" id="calGrid"></div>
-      </section>
+      <div class="main-col" id="mainCol">
+        <section class="cal">
+          <div class="cal-head" id="calHead"></div>
+          <div class="cal-grid" id="calGrid"></div>
+        </section>
+        <!-- 달력 보기에서는 #extra(날짜 미정 업무 · 공지)가 이 자리(달력 아래)로 옮겨짐 -->
+      </div>
       <aside class="side">
         <section class="day-panel" id="dayPanel"></section>
         <section class="side-card" id="peoplePanel"></section>
@@ -95,8 +98,8 @@
   <div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true"></div></div>
   <div id="toast" class="toast" role="status"></div>
 
-  <script src="firebase-config.js?v=17"></script>
-  <script src="lock.js?v=17"></script>
-  <script src="app.js?v=17"></script>
+  <script src="firebase-config.js?v=18"></script>
+  <script src="lock.js?v=18"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>

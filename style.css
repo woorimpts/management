@@ -225,6 +225,10 @@ body.locked > :not(.lock):not(script) { display: none !important; }
 .group h3 small { margin-left: auto; color: var(--muted); font-weight: 400; font-size: 12px; }
 .group .body { padding: 8px 10px; }
 .extra { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+/* 달력 보기: 달력 아래 왼쪽 열에 날짜 미정 업무 → 공지 순서로 위아래 배치 */
+.main-col { display: flex; flex-direction: column; min-width: 0; }
+.main-col .extra { grid-template-columns: minmax(0, 1fr); }
+.main-col .extra:empty { display: none; }
 .notes { margin: 0; padding: 12px 16px; list-style: none; font-size: 13px; }
 .notes li { padding: 4px 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .notes li .by { font-size: 11px; color: var(--muted); margin-left: 4px; }

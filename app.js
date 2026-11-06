@@ -647,7 +647,12 @@ function renderExtra() {
         <button class="edit-btn" data-edit-note="${esc(n.id)}" title="수정/삭제" aria-label="수정">✎</button></li>`).join("")}</ul></section>`;
   if (S.view === "calendar" && S.loaded && !S.tasks.length && !S.vacs.length)
     html += `<section class="group"><div class="empty big">이 달에 등록된 업무가 없습니다.<br><b>📤 엑셀 업로드</b> 또는 <b>+ 업무 추가</b>로 시작하세요.</div></section>`;
-  $("#extra").innerHTML = html;
+  const extra = $("#extra");
+  extra.innerHTML = html;
+  // 달력 보기에서는 달력 바로 아래(왼쪽 열), 목록 보기에서는 목록 아래에 표시
+  const host = S.view === "calendar" ? $("#mainCol") : $("#listView").parentNode;
+  if (S.view === "calendar") { if (extra.parentNode !== host) host.appendChild(extra); }
+  else if (extra.previousElementSibling !== $("#listView")) $("#listView").after(extra);
 }
 
 // ───────── 모달 ─────────
