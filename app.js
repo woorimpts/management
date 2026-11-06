@@ -723,12 +723,13 @@ function subRow(s, idx) {
 
 function taskForm(task, date) {
   if (!requireName()) return;
-  const t = task || { start: date || S.sel, end: "", dept: "", title: "", owner: userName(), memo: "" };
+  // 위쪽 '+ 업무 추가'는 날짜 없이 열림(비워 두면 날짜 미정), 날짜 패널의 '+ 업무'는 그 날짜가 채워짐
+  const t = task || { start: date || "", end: "", dept: "", title: "", owner: userName(), memo: "" };
   openModal(`<form class="form" id="taskForm">
     <h2>${task ? "업무 수정" : "업무 추가"}</h2>
     <label>업무 내용 *<textarea name="title" rows="2" required maxlength="300">${esc(stripNum(t.title))}</textarea></label>
     <div class="row2">
-      <label>날짜(시작) *<input type="date" name="start" value="${esc(t.start || "")}" required></label>
+      <label>날짜(시작) <small>(비우면 날짜 미정)</small><input type="date" name="start" value="${esc(t.start || "")}"></label>
       <label>종료일 <small>(하루면 비워두기)</small><input type="date" name="end" value="${esc(t.end && t.end !== t.start ? t.end : "")}"></label>
     </div>
     <div class="row2">
@@ -755,7 +756,10 @@ function taskForm(task, date) {
       ev.preventDefault();
       const v = Object.fromEntries(new FormData(f));
       const title = v.title.trim(), dept = v.dept.trim();
-      if (!title || !dept || !isISO(v.start)) return;
+      if (!title || !dept) return;
+      const dated = isISO(v.start);
+      if (v.start && !dated) { toast("날짜 형식이 올바르지 않습니다."); return; }
+      if (!dated && v.end) { toast("종료일만 있고 시작일이 없습니다. 시작일을 넣거나 종료일을 비워 주세요."); return; }
       if (v.end && v.end < v.start) { toast("종료일이 시작일보다 빠릅니다."); return; }
       const id = task ? task.id : db.collection("items").doc().id;
       // 세부 항목: 기존 항목은 id를 유지해야 체크 기록이 이어짐
@@ -770,7 +774,10 @@ function taskForm(task, date) {
         if (!sub.id) sub.id = `${id}~${Date.now().toString(36)}${subs.length}`;
         subs.push(sub);
       }
-      const data = { ...(task || {}), title, dept, start: v.start, end: v.end || v.start, owner: v.owner.trim(), memo: v.memo.trim(), dateText: "", subs };
+      const data = { ...(task || {}), title, dept, start: dated ? v.start : null, end: dated ? v.end || v.start : null, owner: v.owner.trim(), memo: v.memo.trim(),
+        dateText: dated ? "" : (task && task.dateText) || "", subs };
+      // 날짜 미정 업무는 보고 있는 달(이미 미정이던 업무는 원래 달)의 '날짜 미정 · 상시 업무'에 표시
+      if (!dated) data.months = task && !task.start && task.months && task.months.length ? task.months : [S.month];
       if (!task) { data.src = "manual"; data.by = userName(); }
       // 업무와 날짜가 다른 세부항목만 달력에 따로 표시
       data.subs.forEach((s) => { s.own = !!s.start && (s.start !== data.start || (s.end || s.start) !== data.end); });
@@ -778,8 +785,8 @@ function taskForm(task, date) {
       try {
         await saveItem("task", data, id);
         rememberDept(dept); store("myDept", dept);
-        closeModal(); toast(task ? "업무를 수정했습니다." : "업무를 추가했습니다.");
-        if (!task && !v.start.startsWith(S.month)) setMonth(v.start.slice(0, 7), v.start);
+        closeModal(); toast(task ? "업무를 수정했습니다." : dated ? "업무를 추가했습니다." : "날짜 미정 업무로 추가했습니다.");
+        if (!task && dated && !v.start.startsWith(S.month)) setMonth(v.start.slice(0, 7), v.start);
       } catch (e) { console.error(e); toast("저장하지 못했습니다."); busy(f, false); }
     };
     if (task) wireDelete(card, async () => {
@@ -1290,7 +1297,7 @@ function wireEvents() {
     let el;
     if ((el = t.closest("[data-edit-task]"))) { ev.preventDefault(); taskForm(S.tasks.find((x) => x.id === el.dataset.editTask)); return; }
     if ((el = t.closest("[data-edit-vac]"))) { vacForm(S.vacs.find((x) => x.id === el.dataset.editVac)); return; }
-    if ((el = t.closest("[data-add-task]"))) { taskForm(null, el.dataset.addTask || S.sel); return; }
+    if ((el = t.closest("[data-add-task]"))) { taskForm(null, el.dataset.addTask || ""); return; }
     if ((el = t.closest("[data-add-vac]"))) { vacForm(null, el.dataset.addVac || S.sel); return; }
     if ((el = t.closest("[data-edit-note]"))) { noteForm(S.notes.find((x) => x.id === el.dataset.editNote)); return; }
     if (t.closest("[data-add-note]")) { noteForm(null); return; }
