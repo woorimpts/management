@@ -319,6 +319,10 @@ function entries() {
   return out;
 }
 const isLate = (e) => !isDone(e.id) && e.end && e.end < TODAY;
+// 확인 필요: 체크가 안 됐는데 마감일이 오늘이거나 지난 업무 → 맨 위로 올리고 깜빡임
+const isUrgent = (e) => !isDone(e.id) && !!e.end && e.end <= TODAY;
+const pUrgent = (p) => !p.done && !!p.start && (p.end || p.start) <= TODAY;
+const urgTag = (end) => `<b class="urg">${end < TODAY ? "지남" : "오늘"}</b>`;
 function checkables() {
   const out = [];
   S.tasks.forEach((t) => {
@@ -451,24 +455,24 @@ function renderCalendar() {
     const out = d.getMonth() !== m - 1;
     const cls = ["cell", out && "out", ds === TODAY && "today", ds === S.sel && "sel", d.getDay() === 0 && "sun", d.getDay() === 6 && "sat"].filter(Boolean).join(" ");
     if (out) { html += `<div class="${cls}"><div class="dhead"><span class="dnum">${d.getDate()}</span></div></div>`; continue; }
-    const list = dayEntries(ds);
+    const list = dayEntries(ds).sort((a, b) => isUrgent(b) - isUrgent(a));
     const vacs = dayVacs(ds);
     const doneN = list.filter((e) => isDone(e.id)).length;
     const lateN = list.filter(isLate).length;
     const countCls = lateN ? "late" : list.length && doneN === list.length ? "all" : "";
     const count = list.length ? `<span class="dcount ${countCls}">${doneN}/${list.length}</span>` : "";
     const vacHtml = vacs.length ? `<div class="vac-line" title="${esc(vacs.map(vacLabel).join(", "))}">🌴 ${esc(vacs.slice(0, 3).map(vacLabel).join(", "))}${vacs.length > 3 ? ` 외 ${vacs.length - 3}` : ""}</div>` : "";
-    const pers = dayPersonal(ds).sort((a, b) => isMine(b) - isMine(a));
+    const pers = dayPersonal(ds).sort((a, b) => pUrgent(b) - pUrgent(a) || isMine(b) - isMine(a));
     const total = vacs.length ? 3 : 4;
     // 부서 업무 먼저, 개인 기록은 최소 1칸
     const budget = Math.min(list.length, pers.length ? total - 1 : total);
     const pShow = pers.slice(0, Math.max(1, total - budget));
-    const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""}" style="--c:${personColor(p.name)}" title="${esc(p.name + " · " + p.title)}">
-        <input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${isMine(p) ? "" : "disabled"}><i class="av-s">${esc(initial(p.name).slice(-1))}</i><span>${p.private ? "🔒" : ""}${esc(p.title)}</span></label>`).join("");
+    const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""} ${pUrgent(p) ? "urgent" : ""}" style="--c:${personColor(p.name)}" title="${esc(p.name + " · " + p.title)}">
+        <input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${isMine(p) ? "" : "disabled"}><i class="av-s">${esc(initial(p.name).slice(-1))}</i>${pUrgent(p) ? urgTag(p.end || p.start) : ""}<span>${p.private ? "🔒" : ""}${esc(p.title)}</span></label>`).join("");
     const chips = list.slice(0, budget).map((e) => {
       const done = isDone(e.id);
-      return `<label class="task-chip ${done ? "done" : ""} ${isLate(e) ? "late" : ""}" style="--c:${color(e.task.dept)}" title="${esc(e.task.dept + " · " + (e.sub ? stripNum(e.task.title) + " › " : "") + e.title)}">
-        <input type="checkbox" data-check="${esc(e.id)}" ${done ? "checked" : ""}><span>${esc(stripNum(e.title))}</span></label>`;
+      return `<label class="task-chip ${done ? "done" : ""} ${isLate(e) ? "late" : ""} ${isUrgent(e) ? "urgent" : ""}" style="--c:${color(e.task.dept)}" title="${esc(e.task.dept + " · " + (e.sub ? stripNum(e.task.title) + " › " : "") + e.title)}">
+        <input type="checkbox" data-check="${esc(e.id)}" ${done ? "checked" : ""}>${isUrgent(e) ? urgTag(e.end) : ""}<span>${esc(stripNum(e.title))}</span></label>`;
     }).join("");
     const hidden = list.length - Math.min(list.length, budget) + (pers.length - pShow.length);
     const more = hidden > 0 ? `<div class="more">+${hidden}건 더보기</div>` : "";
@@ -488,13 +492,14 @@ function checkInfo(id) {
 function taskCard(t) {
   const done = isDone(t.id);
   const late = !done && t.start && (t.end || t.start) < TODAY;
+  const dueToday = !done && t.start && (t.end || t.start) === TODAY;
   const meta = [
     `<span class="dept">${esc(t.dept || "부서 미지정")}</span>`,
     t.start ? `<span>📅 ${period(t.start, t.end)}</span>` : t.dateText ? `<span>📅 ${esc(t.dateText)}</span>` : "",
     t.owner ? `<span>👤 ${esc(t.owner)}</span>` : "",
     t.due ? `<span>기한 ${mdw(t.due)}</span>` : t.dueText ? `<span>${esc(t.dueText)}</span>` : "",
     t.memo ? `<span>비고: ${esc(t.memo)}</span>` : "",
-    late ? `<span class="late">기한 지남</span>` : "",
+    late ? `<span class="late">기한 지남</span>` : dueToday ? `<span class="late">오늘 마감</span>` : "",
     checkInfo(t.id),
   ].join("");
   const subs = (t.subs || []).length ? `<ul class="subs">${t.subs.map((s) => {
@@ -504,7 +509,7 @@ function taskCard(t) {
       <span><span class="t">${esc(s.title)}</span> <span class="sd">${period(s.start, s.end)}</span> ${checkInfo(s.id)}</span></li>`;
   }).join("")}</ul>` : "";
   const added = t.src === "manual" && t.by ? `<span class="added">${esc(t.by)} 추가</span>` : "";
-  return `<div class="task ${done ? "done" : ""}" style="--c:${color(t.dept)}">
+  return `<div class="task ${done ? "done" : ""} ${late || dueToday ? "urgent" : ""}" style="--c:${color(t.dept)}">
     <button class="edit-btn" data-edit-task="${esc(t.id)}" title="수정/삭제" aria-label="수정">✎</button>
     <label class="task-row"><input type="checkbox" data-check="${esc(t.id)}" ${done ? "checked" : ""}>
       <div><div class="task-title">${esc(stripNum(t.title))}</div><div class="meta">${meta}${added}</div></div></label>${subs}</div>`;
@@ -512,12 +517,12 @@ function taskCard(t) {
 
 function subCard(e) {
   const s = e.sub, t = e.task, done = isDone(s.id);
-  return `<div class="task ${done ? "done" : ""}" style="--c:${color(t.dept)}">
+  return `<div class="task ${done ? "done" : ""} ${isUrgent(e) ? "urgent" : ""}" style="--c:${color(t.dept)}">
     <button class="edit-btn" data-edit-task="${esc(t.id)}" title="수정/삭제" aria-label="수정">✎</button>
     <div class="parent-ref">${esc(stripNum(t.title))} ›</div>
     <label class="task-row"><input type="checkbox" data-check="${esc(s.id)}" ${done ? "checked" : ""}>
       <div><div class="task-title">${esc(s.title)}</div>
-      <div class="meta"><span class="dept">${esc(t.dept)}</span><span>📅 ${period(s.start, s.end)}</span>${isLate(e) ? '<span class="late">기한 지남</span>' : ""}${checkInfo(s.id)}</div></div></label></div>`;
+      <div class="meta"><span class="dept">${esc(t.dept)}</span><span>📅 ${period(s.start, s.end)}</span>${isLate(e) ? '<span class="late">기한 지남</span>' : isUrgent(e) ? '<span class="late">오늘 마감</span>' : ""}${checkInfo(s.id)}</div></div></label></div>`;
 }
 
 function vacCard(v) {
@@ -529,18 +534,19 @@ function vacCard(v) {
 
 function personalCard(p) {
   const mine = isMine(p);
-  return `<div class="task pcard ${p.done ? "done" : ""} ${mine ? "mine" : ""}" style="--c:${personColor(p.name)}">
+  const urg = pUrgent(p);
+  return `<div class="task pcard ${p.done ? "done" : ""} ${mine ? "mine" : ""} ${urg ? "urgent" : ""}" style="--c:${personColor(p.name)}">
     ${mine ? `<button class="edit-btn" data-edit-personal="${esc(p.id)}" title="수정/삭제" aria-label="수정">✎</button>` : ""}
     <label class="task-row"><input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${mine ? "" : "disabled"}>
       <div><div class="task-title">${esc(p.title)}</div>
-      <div class="meta"><span class="pname">${p.private ? "🔒 비공개 · " : ""}${esc(p.name)}</span><span>📅 ${period(p.start, p.end)}</span>${p.memo ? `<span>${esc(p.memo)}</span>` : ""}${p.done && p.doneAt ? `<span class="by">✓ 완료</span>` : ""}</div></div></label></div>`;
+      <div class="meta"><span class="pname">${p.private ? "🔒 비공개 · " : ""}${esc(p.name)}</span><span>📅 ${period(p.start, p.end)}</span>${urg ? `<span class="late">${(p.end || p.start) < TODAY ? "기한 지남" : "오늘 마감"}</span>` : ""}${p.memo ? `<span>${esc(p.memo)}</span>` : ""}${p.done && p.doneAt ? `<span class="by">✓ 완료</span>` : ""}</div></div></label></div>`;
 }
 
 function renderPanel() {
   const d = S.sel && S.sel.startsWith(S.month) ? S.sel : S.month + "-01";
-  const list = dayEntries(d);
+  const list = dayEntries(d).sort((a, b) => isUrgent(b) - isUrgent(a));
   const vacs = dayVacs(d);
-  const pers = dayPersonal(d).sort((a, b) => isMine(b) - isMine(a));
+  const pers = dayPersonal(d).sort((a, b) => pUrgent(b) - pUrgent(a) || isMine(b) - isMine(a));
   const doneN = list.filter((e) => isDone(e.id)).length;
   const [, m, day] = d.split("-");
   $("#dayPanel").innerHTML = `<div class="panel-head">
