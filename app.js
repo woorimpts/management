@@ -322,6 +322,9 @@ const isLate = (e) => !isDone(e.id) && e.end && e.end < TODAY;
 // 확인 필요: 체크가 안 됐는데 마감일이 오늘이거나 지난 업무 → 맨 위로 올리고 깜빡임
 const isUrgent = (e) => !isDone(e.id) && !!e.end && e.end <= TODAY;
 const pUrgent = (p) => !p.done && !!p.start && (p.end || p.start) <= TODAY;
+// 표시 순서: ① 깜빡이는 업무(오늘 마감·기한 지남, 미체크) ② 체크 안 한 업무 ③ 체크한 업무(맨 아래)
+const taskRank = (e) => (isUrgent(e) ? 0 : isDone(e.id) ? 2 : 1);
+const pRank = (p) => (pUrgent(p) ? 0 : p.done ? 2 : 1);
 const urgTag = (end) => `<b class="urg">${end < TODAY ? "지남" : "오늘"}</b>`;
 function checkables() {
   const out = [];
@@ -455,14 +458,14 @@ function renderCalendar() {
     const out = d.getMonth() !== m - 1;
     const cls = ["cell", out && "out", ds === TODAY && "today", ds === S.sel && "sel", d.getDay() === 0 && "sun", d.getDay() === 6 && "sat"].filter(Boolean).join(" ");
     if (out) { html += `<div class="${cls}"><div class="dhead"><span class="dnum">${d.getDate()}</span></div></div>`; continue; }
-    const list = dayEntries(ds).sort((a, b) => isUrgent(b) - isUrgent(a));
+    const list = dayEntries(ds).sort((a, b) => taskRank(a) - taskRank(b));
     const vacs = dayVacs(ds);
     const doneN = list.filter((e) => isDone(e.id)).length;
     const lateN = list.filter(isLate).length;
     const countCls = lateN ? "late" : list.length && doneN === list.length ? "all" : "";
     const count = list.length ? `<span class="dcount ${countCls}">${doneN}/${list.length}</span>` : "";
     const vacHtml = vacs.length ? `<div class="vac-line" title="${esc(vacs.map(vacLabel).join(", "))}">🌴 ${esc(vacs.slice(0, 3).map(vacLabel).join(", "))}${vacs.length > 3 ? ` 외 ${vacs.length - 3}` : ""}</div>` : "";
-    const pers = dayPersonal(ds).sort((a, b) => pUrgent(b) - pUrgent(a) || isMine(b) - isMine(a));
+    const pers = dayPersonal(ds).sort((a, b) => pRank(a) - pRank(b) || isMine(b) - isMine(a));
     const total = vacs.length ? 3 : 4;
     // 부서 업무 먼저, 개인 기록은 최소 1칸
     const budget = Math.min(list.length, pers.length ? total - 1 : total);
@@ -544,9 +547,9 @@ function personalCard(p) {
 
 function renderPanel() {
   const d = S.sel && S.sel.startsWith(S.month) ? S.sel : S.month + "-01";
-  const list = dayEntries(d).sort((a, b) => isUrgent(b) - isUrgent(a));
+  const list = dayEntries(d).sort((a, b) => taskRank(a) - taskRank(b));
   const vacs = dayVacs(d);
-  const pers = dayPersonal(d).sort((a, b) => pUrgent(b) - pUrgent(a) || isMine(b) - isMine(a));
+  const pers = dayPersonal(d).sort((a, b) => pRank(a) - pRank(b) || isMine(b) - isMine(a));
   const doneN = list.filter((e) => isDone(e.id)).length;
   const [, m, day] = d.split("-");
   $("#dayPanel").innerHTML = `<div class="panel-head">
@@ -604,7 +607,7 @@ function renderAllPersonal() {
   const groups = on.map((p) => {
     const mine = recs.filter((r) => r.name === p.name);
     const done = mine.filter((r) => r.done).length; total += mine.length; doneT += done;
-    const rows = mine.filter((r) => !(S.allOpen && r.done)).map((r) => {
+    const rows = mine.filter((r) => !(S.allOpen && r.done)).sort((a, b) => pRank(a) - pRank(b)).map((r) => {
       const end = r.end || r.start;
       const cls = [r.done && "done", !r.done && end < TODAY && "late", r.start <= TODAY && TODAY <= end && "today"].filter(Boolean).join(" ");
       return `<div class="all-row ${cls}">
@@ -627,7 +630,7 @@ function renderList() {
   if (S.tasks.some((t) => !t.dept) && S.dept === "all") ds.push("");
   let html = ds.map((d) => {
     const ts = S.tasks.filter((t) => (t.dept || "") === d && !(S.hideDone && isDone(t.id)))
-      .sort((a, b) => (a.start || "9").localeCompare(b.start || "9"));
+      .sort((a, b) => isDone(a.id) - isDone(b.id) || (a.start || "9").localeCompare(b.start || "9"));
     const all = checkables().filter((i) => (i.dept || "") === d);
     const doneN = all.filter((i) => isDone(i.id)).length;
     return `<section class="group" style="--c:${color(d)}"><h3><i></i>${esc(d || "부서 미지정")}<small>${doneN}/${all.length} 완료</small></h3>
@@ -635,14 +638,14 @@ function renderList() {
   }).join("");
   const vacs = S.showVac ? S.vacs.filter((v) => S.dept === "all" || !v.dept || v.dept === S.dept) : [];
   if (vacs.length) html += `<section class="group"><h3>🌴 이번 달 휴가<small>${vacs.length}건</small></h3><div class="body">${vacs.map(vacCard).join("")}</div></section>`;
-  const pers = S.personal.filter((p) => personOn(p.name) && !(S.hideDone && p.done)).sort((a, b) => isMine(b) - isMine(a) || (a.start || "").localeCompare(b.start || ""));
+  const pers = S.personal.filter((p) => personOn(p.name) && !(S.hideDone && p.done)).sort((a, b) => pRank(a) - pRank(b) || isMine(b) - isMine(a) || (a.start || "").localeCompare(b.start || ""));
   if (pers.length) html += `<section class="group me-group"><h3>📝 개인 업무 기록<small>${pers.length}건</small></h3><div class="body">${pers.map(personalCard).join("")}</div></section>`;
   if (!html) html = `<div class="empty big">${S.loaded ? "이 달에 등록된 업무가 없습니다. <b>엑셀 업로드</b> 또는 <b>+ 업무 추가</b>로 시작하세요." : "불러오는 중…"}</div>`;
   $("#listView").innerHTML = html;
 }
 
 function renderExtra() {
-  const undated = S.tasks.filter((t) => !t.start && deptOk(t.dept) && !(S.hideDone && isDone(t.id)));
+  const undated = S.tasks.filter((t) => !t.start && deptOk(t.dept) && !(S.hideDone && isDone(t.id))).sort((a, b) => isDone(a.id) - isDone(b.id));
   const notes = S.notes.filter((n) => deptOk(n.dept));
   let html = "";
   if (S.view === "calendar" && undated.length)
