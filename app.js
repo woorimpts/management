@@ -471,16 +471,16 @@ function renderCalendar() {
     const budget = Math.min(list.length, pers.length ? total - 1 : total);
     const pShow = pers.slice(0, Math.max(1, total - budget));
     const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""} ${pUrgent(p) ? "urgent" : ""}" style="--c:${personColor(p.name)}" title="${esc(p.name + " · " + p.title)}${isMine(p) && !p.done ? DRAG_TIP : ""}"
-        ${isMine(p) && !p.done ? `draggable="true" data-drag="personal" data-id="${esc(p.id)}"` : ""}>
+        ${isMine(p) && !p.done ? `data-drag="personal" data-id="${esc(p.id)}"` : ""}>
         <input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${isMine(p) ? "" : "disabled"}><i class="av-s">${esc(initial(p.name).slice(-1))}</i>${pUrgent(p) ? urgTag(p.end || p.start) : ""}<span>${p.private ? "🔒" : ""}${esc(p.title)}</span></label>`).join("");
     const chips = list.slice(0, budget).map((e) => {
       const done = isDone(e.id);
       return `<label class="task-chip ${done ? "done" : ""} ${isLate(e) ? "late" : ""} ${isUrgent(e) ? "urgent" : ""}" style="--c:${color(e.task.dept)}" title="${esc(e.task.dept + " · " + (e.sub ? stripNum(e.task.title) + " › " : "") + e.title)}${done ? "" : DRAG_TIP}"
-        ${done ? "" : `draggable="true" data-drag="${e.sub ? "sub" : "task"}" data-id="${esc(e.id)}" data-task="${esc(e.task.id)}"`}>
+        ${done ? "" : `data-drag="${e.sub ? "sub" : "task"}" data-id="${esc(e.id)}" data-task="${esc(e.task.id)}"`}>
         <input type="checkbox" data-check="${esc(e.id)}" ${done ? "checked" : ""}>${isUrgent(e) ? urgTag(e.end) : ""}<span>${esc(stripNum(e.title))}</span></label>`;
     }).join("");
     const hidden = list.length - Math.min(list.length, budget) + (pers.length - pShow.length);
-    const more = hidden > 0 ? `<div class="more">+${hidden}건 더보기</div>` : "";
+    const more = hidden > 0 ? `<div class="more" title="누르면 오른쪽에 이 날 업무가 모두 나옵니다. 거기서 끌어 옮길 수 있습니다">+${hidden}건 더보기</div>` : "";
     const dots = `<div class="dots">${vacs.length ? '<i class="vac"></i>' : ""}${pers.slice(0, 3).map((p) => `<i class="me" style="--c:${personColor(p.name)}"></i>`).join("")}${list.slice(0, 7).map((e) => `<i style="--c:${color(e.task.dept)}" class="${isDone(e.id) ? "done" : ""}"></i>`).join("")}</div>`;
     html += `<div class="${cls}" data-date="${ds}"><div class="dhead"><span class="dnum">${d.getDate()}</span>${count}</div>${vacHtml}${chips}${pChips}${more}${dots}</div>`;
   }
@@ -563,7 +563,9 @@ function renderPanel() {
       ${vacs.length || pers.length ? `<div class="sec-title">부서 업무</div>` : ""}
       ${!S.loaded ? '<div class="empty">불러오는 중…</div>' : list.length ? list.map((e) => (e.sub ? subCard(e) : taskCard(e.task))).join("") : '<div class="empty">이 날 마감인 업무가 없습니다.<br>위의 <b>+ 업무</b>로 추가할 수 있습니다.</div>'}
       ${pers.length ? `<div class="sec-title">개인 업무 기록</div>${pers.map(personalCard).join("")}` : ""}
+      ${list.some((e) => !isDone(e.id)) || pers.some((p) => isMine(p) && !p.done) ? '<div class="drag-hint">↔ 카드를 끌어 왼쪽 달력의 다른 날짜에 놓으면 옮겨집니다</div>' : ""}
     </div>`;
+  markPanelDraggable(d);
 }
 
 // ───────── 개인별 업무 기록 (사람 목록) ─────────
@@ -1008,33 +1010,62 @@ const DRAG_TIP = "\n(끌어서 다른 날짜로 옮길 수 있습니다)";
 let DRAG = null;
 const addDays = (d, n) => { const x = new Date(d + "T00:00"); x.setDate(x.getDate() + n); return iso(x); };
 const diffDays = (a, b) => Math.round((new Date(b + "T00:00") - new Date(a + "T00:00")) / 864e5);
+// 오른쪽 날짜 패널의 미완료 카드도 끌 수 있게 (달력 칸에서 '+N건 더보기'로 숨은 업무 포함)
+function markPanelDraggable(date) {
+  $$("#dayPanel .task").forEach((card) => {
+    const cb = $(".task-row input[type=checkbox]", card);
+    if (!cb || cb.checked) return;
+    let kind, id = cb.dataset.check || cb.dataset.pcheck, task = "";
+    if (cb.dataset.pcheck) { if (!$("[data-edit-personal]", card)) return; kind = "personal"; }
+    else { const ed = $("[data-edit-task]", card); task = ed ? ed.dataset.editTask : ""; kind = task && task !== id ? "sub" : "task"; }
+    Object.assign(card.dataset, { drag: kind, id, task, from: date });
+    card.title = "끌어서 왼쪽 달력의 다른 날짜에 놓으면 옮겨집니다";
+  });
+}
 function wireDrag() {
-  const grid = $("#calGrid");
-  const clear = () => { $$(".drop-on", grid).forEach((c) => c.classList.remove("drop-on")); };
-  grid.addEventListener("dragstart", (ev) => {
-    const chip = ev.target.closest && ev.target.closest("[data-drag]");
-    if (!chip) return;
-    DRAG = { kind: chip.dataset.drag, id: chip.dataset.id, task: chip.dataset.task, from: chip.closest(".cell").dataset.date };
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", chip.dataset.id);
-    chip.classList.add("dragging"); grid.classList.add("dragging-on");
+  // 브라우저 기본 끌기(HTML5 DnD)는 패널→달력처럼 영역을 넘나들 때 놓기가 취소되는 경우가 있어 마우스 움직임을 직접 따라감
+  let P0 = null, ghost = null, overCell = null, justDragged = false;
+  const clear = () => { $$(".drop-on").forEach((c) => c.classList.remove("drop-on")); overCell = null; };
+  document.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || ev.pointerType === "touch") return;
+    const src = ev.target.closest("[data-drag]");
+    if (!src || ev.target.closest("input, button, a")) return;
+    const cell = src.closest(".cell");
+    P0 = { x: ev.clientX, y: ev.clientY, src, info: { kind: src.dataset.drag, id: src.dataset.id, task: src.dataset.task, from: cell ? cell.dataset.date : src.dataset.from } };
   });
-  grid.addEventListener("dragend", () => { DRAG = null; clear(); grid.classList.remove("dragging-on"); $$(".dragging", grid).forEach((c) => c.classList.remove("dragging")); });
-  grid.addEventListener("dragover", (ev) => {
-    if (!DRAG) return;
-    const cell = ev.target.closest(".cell[data-date]");
-    if (!cell) return;
-    ev.preventDefault(); ev.dataTransfer.dropEffect = "move";
-    if (!cell.classList.contains("drop-on")) { clear(); cell.classList.add("drop-on"); }
-  });
-  grid.addEventListener("dragleave", (ev) => { if (!grid.contains(ev.relatedTarget)) clear(); });
-  grid.addEventListener("drop", (ev) => {
-    const cell = ev.target.closest(".cell[data-date]");
-    if (!DRAG || !cell) return;
+  document.addEventListener("pointermove", (ev) => {
+    if (!P0) return;
+    if (!DRAG) {
+      if (Math.hypot(ev.clientX - P0.x, ev.clientY - P0.y) < 6) return; // 살짝 누른 건 클릭으로 처리
+      DRAG = P0.info;
+      ghost = P0.src.cloneNode(true);
+      ghost.classList.add("drag-ghost"); ghost.removeAttribute("title");
+      ghost.style.width = Math.min(P0.src.offsetWidth, 260) + "px";
+      document.body.appendChild(ghost);
+      P0.src.classList.add("dragging"); document.body.classList.add("drag-active");
+      const sel = window.getSelection && window.getSelection(); if (sel) sel.removeAllRanges();
+    }
     ev.preventDefault();
-    const dr = DRAG; DRAG = null; clear();
-    moveEntry(dr, cell.dataset.date);
+    ghost.style.transform = `translate(${ev.clientX + 12}px, ${ev.clientY + 10}px)`;
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const cell = el && el.closest("#calGrid .cell[data-date]");
+    if (cell !== overCell) { clear(); if (cell) { cell.classList.add("drop-on"); overCell = cell; } }
   });
+  const end = (cancel) => {
+    if (!P0) return;
+    const dr = DRAG, target = overCell;
+    if (dr) { justDragged = true; setTimeout(() => (justDragged = false), 0); }
+    P0.src.classList.remove("dragging");
+    if (ghost) ghost.remove();
+    ghost = null; P0 = null; DRAG = null;
+    document.body.classList.remove("drag-active"); clear();
+    if (dr && target && !cancel) moveEntry(dr, target.dataset.date);
+  };
+  document.addEventListener("pointerup", () => end(false));
+  document.addEventListener("pointercancel", () => end(true));
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && DRAG) end(true); });
+  // 끌기 직후 따라오는 클릭(체크 토글·날짜 선택)은 무시
+  document.addEventListener("click", (ev) => { if (justDragged) { ev.preventDefault(); ev.stopPropagation(); } }, true);
 }
 async function moveEntry(dr, to) {
   const delta = diffDays(dr.from, to);
