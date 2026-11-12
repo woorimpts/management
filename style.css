@@ -159,6 +159,12 @@ body.locked > :not(.lock):not(script) { display: none !important; }
 .cell.out .dnum { opacity: .4; }
 .cell.today { background: var(--today); }
 .cell.sel { box-shadow: inset 0 0 0 2px var(--accent); }
+/* 끌어서 날짜 옮기기 */
+.task-chip[draggable="true"] { cursor: grab; }
+.task-chip[draggable="true"]:active { cursor: grabbing; }
+.task-chip.dragging { opacity: .35; }
+.cal-grid.dragging-on .cell[data-date] { cursor: copy; }
+.cell.drop-on, .cell.today.drop-on { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); box-shadow: inset 0 0 0 2px var(--accent); }
 .cell:not(.out):hover { background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
 .cell.today:hover { background: var(--today); }
 .dhead { display: flex; align-items: center; justify-content: space-between; gap: 4px; }

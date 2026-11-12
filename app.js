@@ -470,11 +470,13 @@ function renderCalendar() {
     // 부서 업무 먼저, 개인 기록은 최소 1칸
     const budget = Math.min(list.length, pers.length ? total - 1 : total);
     const pShow = pers.slice(0, Math.max(1, total - budget));
-    const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""} ${pUrgent(p) ? "urgent" : ""}" style="--c:${personColor(p.name)}" title="${esc(p.name + " · " + p.title)}">
+    const pChips = pShow.map((p) => `<label class="task-chip pchip ${p.done ? "done" : ""} ${isMine(p) ? "mine" : ""} ${pUrgent(p) ? "urgent" : ""}" style="--c:${personColor(p.name)}" title="${esc(p.name + " · " + p.title)}${isMine(p) && !p.done ? DRAG_TIP : ""}"
+        ${isMine(p) && !p.done ? `draggable="true" data-drag="personal" data-id="${esc(p.id)}"` : ""}>
         <input type="checkbox" data-pcheck="${esc(p.id)}" ${p.done ? "checked" : ""} ${isMine(p) ? "" : "disabled"}><i class="av-s">${esc(initial(p.name).slice(-1))}</i>${pUrgent(p) ? urgTag(p.end || p.start) : ""}<span>${p.private ? "🔒" : ""}${esc(p.title)}</span></label>`).join("");
     const chips = list.slice(0, budget).map((e) => {
       const done = isDone(e.id);
-      return `<label class="task-chip ${done ? "done" : ""} ${isLate(e) ? "late" : ""} ${isUrgent(e) ? "urgent" : ""}" style="--c:${color(e.task.dept)}" title="${esc(e.task.dept + " · " + (e.sub ? stripNum(e.task.title) + " › " : "") + e.title)}">
+      return `<label class="task-chip ${done ? "done" : ""} ${isLate(e) ? "late" : ""} ${isUrgent(e) ? "urgent" : ""}" style="--c:${color(e.task.dept)}" title="${esc(e.task.dept + " · " + (e.sub ? stripNum(e.task.title) + " › " : "") + e.title)}${done ? "" : DRAG_TIP}"
+        ${done ? "" : `draggable="true" data-drag="${e.sub ? "sub" : "task"}" data-id="${esc(e.id)}" data-task="${esc(e.task.id)}"`}>
         <input type="checkbox" data-check="${esc(e.id)}" ${done ? "checked" : ""}>${isUrgent(e) ? urgTag(e.end) : ""}<span>${esc(stripNum(e.title))}</span></label>`;
     }).join("");
     const hidden = list.length - Math.min(list.length, budget) + (pers.length - pShow.length);
@@ -1000,6 +1002,71 @@ async function addMember(form) {
   busy(form, false);
 }
 
+// ───────── 끌어서 날짜 옮기기 ─────────
+// 달력의 미완료 업무(부서 업무·세부 항목·내 개인 기록)를 다른 날짜 칸에 놓으면 그만큼 날짜가 옮겨짐 (기간 길이는 유지)
+const DRAG_TIP = "\n(끌어서 다른 날짜로 옮길 수 있습니다)";
+let DRAG = null;
+const addDays = (d, n) => { const x = new Date(d + "T00:00"); x.setDate(x.getDate() + n); return iso(x); };
+const diffDays = (a, b) => Math.round((new Date(b + "T00:00") - new Date(a + "T00:00")) / 864e5);
+function wireDrag() {
+  const grid = $("#calGrid");
+  const clear = () => { $$(".drop-on", grid).forEach((c) => c.classList.remove("drop-on")); };
+  grid.addEventListener("dragstart", (ev) => {
+    const chip = ev.target.closest && ev.target.closest("[data-drag]");
+    if (!chip) return;
+    DRAG = { kind: chip.dataset.drag, id: chip.dataset.id, task: chip.dataset.task, from: chip.closest(".cell").dataset.date };
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", chip.dataset.id);
+    chip.classList.add("dragging"); grid.classList.add("dragging-on");
+  });
+  grid.addEventListener("dragend", () => { DRAG = null; clear(); grid.classList.remove("dragging-on"); $$(".dragging", grid).forEach((c) => c.classList.remove("dragging")); });
+  grid.addEventListener("dragover", (ev) => {
+    if (!DRAG) return;
+    const cell = ev.target.closest(".cell[data-date]");
+    if (!cell) return;
+    ev.preventDefault(); ev.dataTransfer.dropEffect = "move";
+    if (!cell.classList.contains("drop-on")) { clear(); cell.classList.add("drop-on"); }
+  });
+  grid.addEventListener("dragleave", (ev) => { if (!grid.contains(ev.relatedTarget)) clear(); });
+  grid.addEventListener("drop", (ev) => {
+    const cell = ev.target.closest(".cell[data-date]");
+    if (!DRAG || !cell) return;
+    ev.preventDefault();
+    const dr = DRAG; DRAG = null; clear();
+    moveEntry(dr, cell.dataset.date);
+  });
+}
+async function moveEntry(dr, to) {
+  const delta = diffDays(dr.from, to);
+  if (!delta) return;
+  if (!requireName()) return;
+  try {
+    if (dr.kind === "personal") {
+      const p = S.personal.find((x) => x.id === dr.id);
+      if (!p || !isMine(p)) { toast("본인 기록만 옮길 수 있습니다."); return; }
+      const data = { ...p, start: addDays(p.start, delta), end: addDays(p.end || p.start, delta) };
+      Object.assign(p, { start: data.start, end: data.end }); S.sel = to; render();
+      await savePersonal(data, p.id);
+    } else {
+      const t = S.tasks.find((x) => x.id === dr.task);
+      if (!t) return;
+      const data = { ...t, subs: (t.subs || []).map((s) => ({ ...s })) };
+      if (dr.kind === "sub") {
+        const s = data.subs.find((x) => x.id === dr.id);
+        if (!s) return;
+        s.start = addDays(s.start, delta); s.end = addDays(s.end || s.start, delta);
+      } else {
+        data.start = addDays(t.start, delta); data.end = addDays(t.end || t.start, delta);
+      }
+      // 업무와 날짜가 다른 세부항목만 달력에 따로 표시
+      data.subs.forEach((s) => { s.own = !!s.start && (s.start !== data.start || (s.end || s.start) !== data.end); });
+      Object.assign(t, data); S.sel = to; render();
+      await saveItem("task", data, t.id);
+    }
+    toast(`${mdw(dr.from)} → ${mdw(to)}(으)로 옮겼습니다. 되돌리려면 다시 끌어 놓으세요.`);
+  } catch (e) { console.error(e); toast("옮기지 못했습니다. 새로고침 후 다시 시도해 주세요."); }
+}
+
 function busy(form, on) { $$("button", form).forEach((b) => (b.disabled = on)); }
 
 // ───────── 엑셀 업로드 ─────────
@@ -1349,6 +1416,7 @@ function wireEvents() {
     }
   });
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#modal").hidden) closeModal(); });
+  wireDrag();
   document.addEventListener("submit", (ev) => { if (ev.target.id === "memberForm") { ev.preventDefault(); addMember(ev.target); } });
 
   $("#hideDone").addEventListener("change", (e) => { S.hideDone = e.target.checked; store("hideDone", S.hideDone ? "1" : "0"); render(); });
